@@ -159,10 +159,21 @@ void main()
 
     // Radiative cooling and heating effects
 
-    if (texCoord.y > globalEffectsStartAlt && texCoord.y < globalEffectsEndAlt) {
-      water[TOTAL] -= clamp(globalDrying, 0., max(water[TOTAL] - maxWater(max(realTemp - 20.0, CtoK(-80.))), 0.)); // only dry down to a dew point 20 C below the temperature
+    // Soft transition band instead of a hard step function -- smoothstep ramps the global-effects/Sounding
+    // Forcing strength up and back down over a transition zone at both globalEffectsStartAlt and
+    // globalEffectsEndAlt, instead of switching fully on/off the instant texCoord.y crosses those altitudes.
+    // The hard edge used to inject a discontinuous jump in temperature/moisture/velocity right at those two
+    // altitudes -- worst at the ground, since globalEffectsStartAlt is usually 0 -- which excited spurious
+    // pressure waves. bandWeight is 0 outside the band, 1 in the middle of it, and ramps smoothly through
+    // this transition zone at both edges.
+    float globalEffectsTransition = 0.05; // fraction of domain height the ramp takes at each edge
+    float bandWeight = smoothstep(globalEffectsStartAlt - globalEffectsTransition, globalEffectsStartAlt + globalEffectsTransition, texCoord.y) *
+                        (1.0 - smoothstep(globalEffectsEndAlt - globalEffectsTransition, globalEffectsEndAlt + globalEffectsTransition, texCoord.y));
 
-      base[TEMPERATURE] += globalHeating;
+    if (bandWeight > 0.0) {
+      water[TOTAL] -= clamp(globalDrying, 0., max(water[TOTAL] - maxWater(max(realTemp - 20.0, CtoK(-80.))), 0.)) * bandWeight; // only dry down to a dew point 20 C below the temperature
+
+      base[TEMPERATURE] += globalHeating * bandWeight;
 
 
       // apply real sounding
@@ -170,16 +181,25 @@ void main()
       int soundingArrayindex = int(texCoord.y * (1.0 / texelSize.y));
 
       float Tdiff = base[TEMPERATURE] - getRealWorldSounding_T(soundingArrayindex);
-      base[TEMPERATURE] -= Tdiff * 0.001 * soundingForcing;
+      base[TEMPERATURE] -= Tdiff * 0.001 * soundingForcing * bandWeight;
 
 
       float Wdiff = water[TOTAL] - getRealWorldSounding_W(soundingArrayindex);
-      water[TOTAL] -= Wdiff * 0.001 * soundingForcing;
+      water[TOTAL] -= Wdiff * 0.001 * soundingForcing * bandWeight;
 
-      base.xy *= 1.0 - map_rangeC(soundingForcing, 0.1, 1.0, 0.0, 0.001); // drag to stabilize with high forcing
+      // Drag to stabilize with high forcing -- horizontal component ONLY. This used to be base.xy, which
+      // also damped the vertical velocity component, crushing updrafts/convective towers wherever the
+      // Sounding Forcing was active and causing exactly the pressure instabilities (spurious blue/red wave
+      // artifacts) this fix targets. Vertical motion must be left alone for storms to develop naturally.
+      base.x *= 1.0 - map_rangeC(soundingForcing, 0.1, 1.0, 0.0, 0.001) * bandWeight;
 
       float velDiff = base[VX] - getRealWorldSounding_Vel(soundingArrayindex);
-      base[VX] -= velDiff * map_rangeC(soundingForcing, 0.9, 1.0, 0.0, 0.001) * uWindMultiplier;
+      // Clamped so a single iteration's correction toward the target sounding wind can never exceed a small
+      // fixed step, regardless of how large velDiff or bandWeight are (e.g. right after switching station/
+      // date/hour, or near the ground where bandWeight is still ramping in) -- large single-step velocity
+      // corrections there is what previously showed up as strong divergence/pressure artifacts.
+      float velCorrection = velDiff * map_rangeC(soundingForcing, 0.9, 1.0, 0.0, 0.001) * uWindMultiplier * bandWeight;
+      base[VX] -= clamp(velCorrection, -0.02, 0.02);
 
 
       // if (texCoord.y > 0.93) {
@@ -188,12 +208,23 @@ void main()
       // }
     }
 
-    // Rayleigh friction (very light linear drag), horizontal component only, grid-wide -- proportional to
+    // Rayleigh friction (very light linear drag), HORIZONTAL component only, grid-wide -- proportional to
     // (1 - uWindMultiplier) so it's zero in normal play and only engages while a wind reset is cutting the
     // forcing above off, gently bleeding off whatever momentum the fluid already has instead of leaving it
     // to advect indefinitely under its own inertia. Small and continuous by design: never a hard multiply
-    // of the whole field in one step, which is what previously caused pressure-solve shocks.
+    // of the whole field in one step, which is what previously caused pressure-solve shocks. Vertical
+    // velocity (base[VY]) is deliberately never touched by the wind reset -- updrafts/convection must be
+    // free to continue their ascent uninterrupted by a control that is only meant to zero out the
+    // horizontal background wind.
     base[VX] -= base[VX] * 0.01 * (1.0 - uWindMultiplier);
+
+    // Ceiling sponge layer (Rayleigh damping): in the top 20% of the domain (texCoord.y above 0.8, ramping
+    // smoothly via smoothstep up to full strength at the very top, texCoord.y == 1.0), gently damp both
+    // velocity components. Gravity waves and vertical motion generated by the forcing above would otherwise
+    // hit the rigid top boundary and reflect back down into the domain undamped; this absorbs them instead,
+    // the same role a sponge/absorbing layer plays at the top of real atmospheric models.
+    float spongeCoeff = smoothstep(0.8, 1.0, texCoord.y);
+    base.xy -= base.xy * spongeCoeff * 0.05;
 
     // water[0] -= max(water[1] - 0.1, 0.0) * 0.0001; // Precipitation effect
     // drying !
