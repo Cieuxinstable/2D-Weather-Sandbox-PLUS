@@ -187,6 +187,20 @@ function interpolateTableAtAltitude(table, targetAlt)
 
 function isFutureTimestamp(timeStamp) { return timeStamp > Math.floor(Date.now() / 1000); } // no Meteociel archive has tomorrow's weather
 
+// Real radiosondes only launch at fixed synoptic hours (00Z/12Z), published with some delay -- querying
+// for "right now" (e.g. an in-game station marker click with no setup-screen date of its own to fall back
+// on) is essentially guaranteed to miss. This rounds DOWN to the latest 00Z or 12Z at or before the given
+// moment, which is always either later today or earlier today (never needs to reach back to yesterday,
+// since every instant has a 00Z of its own day at or before it).
+function roundToLatestSynopticEpoch(epochTime)
+{
+  const SECONDS_PER_DAY = 86400;
+  const dayStart = Math.floor(epochTime / SECONDS_PER_DAY) * SECONDS_PER_DAY; // 00Z of that UTC day
+  const hoursIntoDay = (epochTime - dayStart) / 3600;
+
+  return hoursIntoDay >= 12 ? dayStart + 12 * 3600 : dayStart;
+}
+
 // Loads a single preset station's REAL Meteociel sounding only -- no synthetic/estimated fallback of any
 // kind. Returns null (never throws) for a future date, an unreachable proxy, or a station with no real
 // observation archived at this exact date/hour; the caller (prepareSounding()) shows an explicit
@@ -5239,7 +5253,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     if (statusEl)
       statusEl.textContent = 'Chargement du sondage réel Meteociel pour ' + key + '...';
 
-    const epochTime = lastSoundingEpochTime !== null ? lastSoundingEpochTime : Math.floor(Date.now() / 1000);
+    // Prefer the exact date/hour explicitly picked on the setup screen; only if that's somehow unset does
+    // this fall back to "now" -- and even then, rounded down to the latest real synoptic hour (00Z/12Z)
+    // rather than the literal current minute, which no archive would ever have.
+    const epochTime = lastSoundingEpochTime !== null ? lastSoundingEpochTime : roundToLatestSynopticEpoch(Math.floor(Date.now() / 1000));
     const table = await loadStationSounding(soundingStations[key].id, epochTime);
 
     if (!table) {
@@ -5364,15 +5381,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   var windResetAnimationId = null;
 
-  // Smoothly fades guiControls.wind AND windSoundingFactor to exactly 0 together over a few seconds
-  // instead of snapping just the former: with Sounding Forcing active, advectionShader.frag continuously
-  // re-pulls velocity toward the sounding's own real wind profile (realWorldSounding_Velv) every frame, so
-  // zeroing guiControls.wind alone left that injection fighting the reset and effectively undoing it.
-  // windSoundingFactor scales that injected profile down to nothing in lockstep, so the simulation's
-  // EFFECTIVE wind -- from both sources -- reaches a genuinely calm 0 by the time this finishes. Shows
-  // #windResetProgress while it runs. Re-triggering while already running just restarts cleanly from
-  // whatever the current values are. Bound to guiControls.resetWind (the dat.GUI "Réinitialiser les vents"
-  // button).
+  // Smoothly fades three independent things to 0 together over a few seconds, instead of just the first:
+  //  1) guiControls.wind, the global wind bias uniform in velocityProgram;
+  //  2) windSoundingFactor, which scales the wind Sounding Forcing keeps injecting every frame
+  //     (advectionShader.frag's velDiff term pulls toward realWorldSounding_Velv regardless of (1));
+  //  3) windResetFactor, applied directly to the advected horizontal velocity FIELD itself
+  //     (base[VX] *= windResetFactor, grid-wide, in advectionShader.frag) -- (1) and (2) only stop
+  //     REintroducing wind; they don't erase momentum the fluid already has. Without this third factor,
+  //     existing velocity just kept advecting along under its own inertia and the "reset" had no visible
+  //     effect. Shows #windResetProgress while it runs. Re-triggering while already running just restarts
+  //     cleanly from whatever the current values are. Bound to guiControls.resetWind (the dat.GUI
+  //     "Réinitialiser les vents" button).
   function startWindReset()
   {
     if (windResetAnimationId !== null)
@@ -5402,6 +5421,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       windSoundingFactor = startWindSoundingFactor * remaining;
       updateSoundingWindUniform();
 
+      gl.useProgram(advectionProgram);
+      gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windResetFactor'), remaining);
+
       const pct = Math.round(t * 100);
       if (labelEl)
         labelEl.textContent = 'Réinitialisation des vents : ' + pct + '%...';
@@ -5418,9 +5440,21 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         windSoundingFactor = 0;
         updateSoundingWindUniform();
 
+        gl.useProgram(advectionProgram);
+        gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windResetFactor'), 0.0);
+
         windResetAnimationId = null;
         if (progressEl)
           progressEl.style.display = 'none';
+
+        // The field is now flushed to exactly 0 (base[VX] *= 0.0), but the main sim loop runs on its own
+        // requestAnimationFrame independent of this one, so give it a moment to actually consume that 0
+        // before disengaging the multiplier -- reverting to 1.0 on this same tick could otherwise race it
+        // and the shader might never actually see factor=0 applied at all.
+        setTimeout(() => {
+          gl.useProgram(advectionProgram);
+          gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windResetFactor'), 1.0); // disengage: field is already 0, so this is a no-op from here on until the next reset
+        }, 100);
       }
     }
 
@@ -7251,6 +7285,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1f(gl.getUniformLocation(advectionProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(advectionProgram, 'waterTemperature'),
                CtoK(guiControls.waterTemperature)); // can be changed by GUI input
+  gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windResetFactor'), 1.0); // inert until startWindReset() ramps it down
 
   updateSoundingForcingUniforms();
 

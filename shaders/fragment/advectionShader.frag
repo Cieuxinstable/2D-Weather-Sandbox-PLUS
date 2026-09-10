@@ -41,6 +41,7 @@ uniform float globalDrying;
 uniform float globalHeating;
 uniform float soundingForcing;
 uniform float waterTemperature;
+uniform float windResetFactor; // 1.0 = normal; ramped 1.0 -> 0.0 over ~5s by startWindReset() in app.js, applied directly to the advected horizontal velocity field itself (not just a forcing bias), grid-wide, so existing wind momentum is actually flushed out rather than merely no longer re-added
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -91,6 +92,7 @@ void main()
     // ADVECT AIR:
 
     base[VX] = bilerp(baseTex, fragCoord - velAtVx).x;
+    base[VX] *= windResetFactor; // direct flush of the horizontal velocity FIELD during a wind reset -- see uniform declaration above
     base[VY] = bilerp(baseTex, fragCoord - velAtVy).y;
 
     base[PRESSURE] = bilerpWall(baseTex, wallTex, fragCoord - velAtP)[PRESSURE];
