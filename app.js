@@ -405,6 +405,7 @@ function createStationSelect()
   for (const [key, value] of Object.entries(soundingStations)) {
     let option = document.createElement('option');
     option.value = value.id;
+    option.dataset.key = key; // looked up later (prepareSounding()) to keep guiControls.activeSoundingStation in sync
     option.innerHTML = key + ' ' + value.lat.toFixed(1) + '° N';
     select.appendChild(option);
   }
@@ -765,6 +766,7 @@ const guiControls_default = {
   tempUnit : 'TEMP_UNIT_C',
   speedUnit : 'SPEED_UNIT_KMH',
   showStationMarkers : true, // real Meteociel radiosonde station pins overlaid on the main view, click to load that station's real sounding for the live Sounding Forcing
+  activeSoundingStation : 'Munich', // matches createStationSelect()'s own default (id 10868) on the setup screen
 };
 
 var horizontalDisplayMult = 3.0; // 3.0 to cover srceen while zoomed out
@@ -2443,6 +2445,7 @@ async function prepareSounding()
     }
 
     soundingData = found.table;
+    guiControls.activeSoundingStation = found.stationKey; // keeps the in-game station switcher (dropdown + marker bar) in sync
     drawSetupEmagram(found.table);
 
     if (titleEl)
@@ -2467,6 +2470,9 @@ async function prepareSounding()
   }
 
   soundingData = table;
+  const pickedOption = stationSelector.options[stationSelector.selectedIndex];
+  if (pickedOption.dataset.key)
+    guiControls.activeSoundingStation = pickedOption.dataset.key; // keeps the in-game station switcher (dropdown + marker bar) in sync
   drawSetupEmagram(table);
 
   if (statusEl) {
@@ -4698,6 +4704,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Sounding Forcing');
 
+    // Right next to the Sounding Forcing slider itself, not just as the separate on-screen marker bar --
+    // switching the real Meteociel station driving that forcing is a single click here.
+    fluidParams_folder.add(guiControls, 'activeSoundingStation', Object.keys(soundingStations))
+      .name('Sounding Station')
+      .onChange(function() { loadStationForForcing(guiControls.activeSoundingStation); })
+      .listen(); // stays in sync when a station is instead picked from the on-screen marker bar
+
     fluidParams_folder.add(guiControls, 'showStationMarkers')
       .name('Show Station Markers')
       .onChange(function() {
@@ -4708,6 +4721,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         if (status)
           status.style.display = guiControls.showStationMarkers ? 'block' : 'none';
       });
+
+    fluidParams_folder.open(); // Sounding Forcing + station switcher should be visible immediately, not behind a collapsed folder
 
     fluidParams_folder.add(guiControls, 'globalEffectsEndAlt', 0, guiControls.simHeight, 10)
       .onChange(function() {
@@ -5214,10 +5229,46 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
   }
 
+  // Shared by both the on-screen marker bar and the "Sounding Station" dropdown right next to the
+  // Sounding Forcing slider (see setupDatGui()'s fluidParams_folder) -- whichever UI the player uses to
+  // switch stations, this is the one place that actually fetches the real data and re-pushes it into the
+  // live simulation, and keeps every other station-switching control in sync afterward.
+  async function loadStationForForcing(key)
+  {
+    const statusEl = document.getElementById('stationMarkerStatus');
+    if (statusEl)
+      statusEl.textContent = 'Chargement du sondage réel Meteociel pour ' + key + '...';
+
+    const epochTime = lastSoundingEpochTime !== null ? lastSoundingEpochTime : Math.floor(Date.now() / 1000);
+    const table = await loadStationSounding(soundingStations[key].id, epochTime);
+
+    if (!table) {
+      if (statusEl)
+        statusEl.textContent = '⚠ Pas de sondage réel Meteociel pour ' + key + ' à cette date/heure.';
+      return false;
+    }
+
+    soundingData = table;
+    updateSoundingForcingUniforms(); // live-updates what the running sim's soundingForcing pulls toward -- resets windSoundingFactor to full strength
+
+    guiControls.activeSoundingStation = key; // syncs the dropdown (its .listen()) even when picked from the marker bar instead
+
+    const bar = document.getElementById('stationMarkersBar');
+    if (bar) {
+      for (const b of bar.children)
+        b.style.background = (b.dataset.stationKey === key) ? 'rgba(80, 160, 255, 0.55)' : 'rgba(255, 255, 255, 0.08)';
+    }
+
+    if (statusEl)
+      statusEl.textContent = '✓ Sounding Forcing mis à jour — station ' + key;
+    return true;
+  }
+
   // Real Meteociel radiosonde station pins, overlaid directly on the main game view (no separate map) --
   // click one to load ITS real archived sounding (at whatever date/hour was last configured on the setup
-  // screen, see lastSoundingEpochTime) and push it live into the running sim's Sounding Forcing via
-  // updateSoundingForcingUniforms(), without touching the city search or the setup-screen module at all.
+  // screen, see lastSoundingEpochTime) and push it live into the running sim's Sounding Forcing. On by
+  // default (guiControls.showStationMarkers) so the stations are immediately usable, not tucked behind a
+  // disabled toggle -- that checkbox only exists to declutter the screen for players who don't want it.
   function setupStationMarkers()
   {
     const bar = document.createElement('div');
@@ -5249,42 +5300,21 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     statusEl.style.textShadow = '1px 1px 2px black';
     statusEl.style.display = guiControls.showStationMarkers ? 'block' : 'none';
 
-    let activeButton = null;
-
     for (const key of Object.keys(soundingStations)) {
       const btn = document.createElement('button');
       btn.textContent = '📍 ' + key;
       btn.title = 'Charger le sondage réel Meteociel de ' + key;
+      btn.dataset.stationKey = key;
       btn.style.marginRight = '4px';
       btn.style.padding = '4px 8px';
       btn.style.fontSize = '12px';
       btn.style.color = 'white';
-      btn.style.background = 'rgba(255, 255, 255, 0.08)';
+      btn.style.background = (key === guiControls.activeSoundingStation) ? 'rgba(80, 160, 255, 0.55)' : 'rgba(255, 255, 255, 0.08)';
       btn.style.border = '1px solid rgba(255, 255, 255, 0.3)';
       btn.style.borderRadius = '4px';
       btn.style.cursor = 'pointer';
 
-      btn.addEventListener('click', async function() {
-        statusEl.textContent = 'Chargement du sondage réel Meteociel pour ' + key + '...';
-
-        const epochTime = lastSoundingEpochTime !== null ? lastSoundingEpochTime : Math.floor(Date.now() / 1000);
-        const table = await loadStationSounding(soundingStations[key].id, epochTime);
-
-        if (!table) {
-          statusEl.textContent = '⚠ Pas de sondage réel Meteociel pour ' + key + ' à cette date/heure.';
-          return;
-        }
-
-        soundingData = table;
-        updateSoundingForcingUniforms(); // live-updates what the running sim's soundingForcing pulls toward
-
-        if (activeButton)
-          activeButton.style.background = 'rgba(255, 255, 255, 0.08)';
-        btn.style.background = 'rgba(80, 160, 255, 0.55)';
-        activeButton = btn;
-
-        statusEl.textContent = '✓ Sounding Forcing mis à jour — station ' + key;
-      });
+      btn.addEventListener('click', function() { loadStationForForcing(key); });
 
       bar.appendChild(btn);
     }
@@ -5334,9 +5364,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   var windResetAnimationId = null;
 
-  // Smoothly fades guiControls.wind to exactly 0 over a few seconds instead of snapping it, showing
-  // #windResetProgress while it runs. Re-triggering while already running just restarts cleanly from the
-  // current value. Bound to guiControls.resetWind (the dat.GUI "Réinitialiser les vents" button).
+  // Smoothly fades guiControls.wind AND windSoundingFactor to exactly 0 together over a few seconds
+  // instead of snapping just the former: with Sounding Forcing active, advectionShader.frag continuously
+  // re-pulls velocity toward the sounding's own real wind profile (realWorldSounding_Velv) every frame, so
+  // zeroing guiControls.wind alone left that injection fighting the reset and effectively undoing it.
+  // windSoundingFactor scales that injected profile down to nothing in lockstep, so the simulation's
+  // EFFECTIVE wind -- from both sources -- reaches a genuinely calm 0 by the time this finishes. Shows
+  // #windResetProgress while it runs. Re-triggering while already running just restarts cleanly from
+  // whatever the current values are. Bound to guiControls.resetWind (the dat.GUI "Réinitialiser les vents"
+  // button).
   function startWindReset()
   {
     if (windResetAnimationId !== null)
@@ -5347,6 +5383,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     const fillEl = document.getElementById('windResetProgressFill');
 
     const startWind = guiControls.wind;
+    const startWindSoundingFactor = windSoundingFactor;
     const durationMs = 5000;
     const startTime = performance.now();
 
@@ -5356,10 +5393,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     function tick(now)
     {
       const t = clamp((now - startTime) / durationMs, 0, 1);
+      const remaining = 1 - t;
 
-      guiControls.wind = startWind * (1 - t);
+      guiControls.wind = startWind * remaining;
       gl.useProgram(velocityProgram);
       gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), guiControls.wind);
+
+      windSoundingFactor = startWindSoundingFactor * remaining;
+      updateSoundingWindUniform();
 
       const pct = Math.round(t * 100);
       if (labelEl)
@@ -5373,6 +5414,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         guiControls.wind = 0;
         gl.useProgram(velocityProgram);
         gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), 0);
+
+        windSoundingFactor = 0;
+        updateSoundingWindUniform();
+
         windResetAnimationId = null;
         if (progressEl)
           progressEl.style.display = 'none';
@@ -7111,17 +7156,43 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   // generate sounding data for forcing in sim
 
-  // Rebuilds the realWorldSounding_T/W/Vel uniform arrays from the current global `soundingData` and
-  // (re-)uploads them to advectionProgram. Called once here during setup, and again later whenever the
-  // player picks a different real station's sounding from the in-game station markers (see
-  // setupStationMarkers()/loadStationSoundingForForcing()) -- soundingForcing (the slider right below)
-  // continuously relaxes the live simulation toward whatever these currently hold, so re-uploading a new
-  // station's profile here changes what the running sim is being pulled toward, without restarting it.
+  // 1 = the sounding's own real wind is injected at full strength (advectionShader.frag's velDiff term
+  // pulls toward the real realWorldSounding_Velv profile as usual); 0 = fully suppressed (pulls toward 0
+  // instead), which is what lets startWindReset() actually neutralize the wind even with Sounding Forcing
+  // active. Reset to 1 by updateSoundingForcingUniforms() whenever a station's data is (re)loaded, since
+  // picking a station implies wanting its real wind too -- only the wind-reset button suppresses it.
+  var windSoundingFactor = 1.0;
+
+  // Rebuilds and re-uploads ONLY realWorldSounding_Velv, scaled by windSoundingFactor. Split out from
+  // updateSoundingForcingUniforms() below so startWindReset() can fade just the wind component every
+  // frame without redoing the (identical, unrelated) temperature/moisture work each time.
+  function updateSoundingWindUniform()
+  {
+    var realWorldSounding_Vel = new Float32Array(608); // 152 vec4 = up to sim_res_y + 1 = 607
+
+    if (soundingData && soundingData.length > 10) {
+      var soundingForSim = rawSoundingToSimSounding(soundingData, guiControls.simHeight, sim_res_y + 1);
+      for (var y = 0; y < sim_res_y + 1; y++)
+        realWorldSounding_Vel[y] = soundingForSim[y].vel * windSoundingFactor;
+    }
+
+    gl.useProgram(advectionProgram);
+    gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Velv'), realWorldSounding_Vel);
+  }
+
+  // Rebuilds the realWorldSounding_T/W uniform arrays from the current global `soundingData` and
+  // (re-)uploads them to advectionProgram, plus the wind array via updateSoundingWindUniform() (with
+  // windSoundingFactor reset to full strength). Called once here during setup, and again later whenever
+  // the player picks a different real station's sounding from the in-game station markers or the Sounding
+  // Station dropdown (see loadStationForForcing()) -- soundingForcing (the slider right below) continuously
+  // relaxes the live simulation toward whatever these currently hold, so re-uploading a new station's
+  // profile here changes what the running sim is being pulled toward, without restarting it.
   function updateSoundingForcingUniforms()
   {
-    var realWorldSounding_T = new Float32Array(608);   // 152 vec4 = up to sim_res_y + 1 = 607
-    var realWorldSounding_W = new Float32Array(608);   // 152 vec4 = up to sim_res_y + 1 = 607
-    var realWorldSounding_Vel = new Float32Array(608); // 152 vec4 = up to sim_res_y + 1 = 607
+    windSoundingFactor = 1.0; // a freshly (re)loaded station's own real wind always starts at full strength
+
+    var realWorldSounding_T = new Float32Array(608); // 152 vec4 = up to sim_res_y + 1 = 607
+    var realWorldSounding_W = new Float32Array(608); // 152 vec4 = up to sim_res_y + 1 = 607
 
     if (soundingData && soundingData.length > 10) {
       var soundingForSim = rawSoundingToSimSounding(soundingData, guiControls.simHeight, sim_res_y + 1);
@@ -7132,11 +7203,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         realWorldSounding_T[y] = realToPotentialT(CtoK(soundingSample.t), y); // initial temperature profile
         realWorldSounding_W[y] = maxWater(CtoK(soundingSample.td), y);        // initial temperature profile
-        realWorldSounding_Vel[y] = soundingSample.vel;
       }
       // console.log(realWorldSounding_T);
       // console.log(realWorldSounding_W);
-      // console.log(realWorldSounding_Vel);
     } else {
       console.log('No valid sounding loaded!');
     }
@@ -7144,7 +7213,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.useProgram(advectionProgram);
     gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Tv'), realWorldSounding_T);
     gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Wv'), realWorldSounding_W);
-    gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Velv'), realWorldSounding_Vel);
+
+    updateSoundingWindUniform();
   }
 
   // generate Initial temperature profile
