@@ -49,15 +49,17 @@ void main()
                            // thereby reflect any pressure waves back
   } else {
 
+    float dragFactor = 1. - dragMultiplier * 0.0002; // linear drag -- same factor applied to both components below, computed once instead of twice
+
     if (wallXpY0[DISTANCE] == 0) {
       base[VX] = 0.0;                                  // Since X velocity is defined at the right of the cell, it has to be done in the cell to the left of the wall
     } else {
       base[VX] += base[PRESSURE] - baseXpY0[PRESSURE]; // The velocity through the cell changes proportionally to the pressure gradient across the cell. It's basically just newtons 2nd law.
-      base[VX] *= 1. - dragMultiplier * 0.0002;        // linear drag
+      base[VX] *= dragFactor;
     }
 
     base[VY] += base[PRESSURE] - baseX0Yp[PRESSURE];
-    base[VY] *= 1. - dragMultiplier * 0.0002;
+    base[VY] *= dragFactor;
     // quadratic drag
     // base[VX] -= base[VX] * base[VX] * base[VX] * base[VX] * base[VX] *
     // dragMultiplier; base[VY] -= base[VY] * base[VY] * base[VY] * base[VY] *
