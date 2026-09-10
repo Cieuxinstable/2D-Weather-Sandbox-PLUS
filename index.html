@@ -390,6 +390,56 @@
             font-weight: 600;
         }
 
+        /* In-game floating date/hour widget for the Sounding Forcing (see setupSoundingDateTimeWidget()
+           in app.js) -- same glassmorphism language as .glass-card above, but positioned over the running
+           simulation rather than the setup screen. */
+        .sounding-datetime-widget {
+            background: rgba(20, 24, 34, 0.45);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            padding: 8px 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-family: Monospace;
+            color: white;
+        }
+
+        .sounding-datetime-widget input[type="date"] {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 8px;
+            color: white;
+            font-family: Monospace;
+            font-size: 12px;
+            padding: 4px 6px;
+            color-scheme: dark;
+        }
+
+        .sounding-datetime-widget button.hour-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 8px;
+            color: white;
+            font-family: Monospace;
+            font-size: 12px;
+            padding: 4px 10px;
+            cursor: pointer;
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+
+        .sounding-datetime-widget button.hour-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .sounding-datetime-widget button.hour-btn.active {
+            background: rgba(80, 160, 255, 0.55);
+            border-color: rgba(120, 190, 255, 0.7);
+        }
+
         .action-cards {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

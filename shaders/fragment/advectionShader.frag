@@ -41,6 +41,14 @@ uniform float globalDrying;
 uniform float globalHeating;
 uniform float soundingForcing;
 uniform float waterTemperature;
+// 1.0 = normal; ramped 1.0 -> 0.0 over 5s by startWindReset() in app.js. Scales the Sounding Forcing's own
+// wind injection below to nothing (never touching the velocity field directly), and drives a small,
+// physically-motivated Rayleigh friction term proportional to (1 - uWindMultiplier) that gently damps
+// existing momentum out of the horizontal velocity component while the wind is being cut off -- without
+// this, removing the forcing alone would leave already-existing wind advecting under its own inertia
+// indefinitely, since neither this nor the velocity shader's own wind cutoff erase momentum the fluid
+// already has.
+uniform float uWindMultiplier;
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -171,7 +179,7 @@ void main()
       base.xy *= 1.0 - map_rangeC(soundingForcing, 0.1, 1.0, 0.0, 0.001); // drag to stabilize with high forcing
 
       float velDiff = base[VX] - getRealWorldSounding_Vel(soundingArrayindex);
-      base[VX] -= velDiff * map_rangeC(soundingForcing, 0.9, 1.0, 0.0, 0.001);
+      base[VX] -= velDiff * map_rangeC(soundingForcing, 0.9, 1.0, 0.0, 0.001) * uWindMultiplier;
 
 
       // if (texCoord.y > 0.93) {
@@ -179,6 +187,13 @@ void main()
       //   water[TOTAL] -= (water[TOTAL] - 0.0125) * 0.0001;       // keep stratosphere dew point around -80C
       // }
     }
+
+    // Rayleigh friction (very light linear drag), horizontal component only, grid-wide -- proportional to
+    // (1 - uWindMultiplier) so it's zero in normal play and only engages while a wind reset is cutting the
+    // forcing above off, gently bleeding off whatever momentum the fluid already has instead of leaving it
+    // to advect indefinitely under its own inertia. Small and continuous by design: never a hard multiply
+    // of the whole field in one step, which is what previously caused pressure-solve shocks.
+    base[VX] -= base[VX] * 0.01 * (1.0 - uWindMultiplier);
 
     // water[0] -= max(water[1] - 0.1, 0.0) * 0.0001; // Precipitation effect
     // drying !

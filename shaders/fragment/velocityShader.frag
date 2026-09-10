@@ -14,6 +14,7 @@ uniform isampler2D wallTex;
 uniform float dragMultiplier;
 
 uniform float wind;
+uniform float uWindMultiplier; // 1.0 = normal; ramped 1.0 -> 0.0 over 5s by startWindReset() in app.js to cut the global wind force off smoothly, applied here before this frame's pressure projection (pressureProgram, later in the same iteration) rather than touching the velocity field directly
 
 uniform vec2 texelSize;
 // uniform vec2 resolution;
@@ -62,6 +63,6 @@ void main()
     // dragMultiplier; base[VY] -= base[VY] * base[VY] * base[VY] * base[VY] *
     // base[VY] * dragMultiplier;
 
-    base[VX] += wind * 0.000001;
+    base[VX] += wind * uWindMultiplier * 0.000001;
   }
 }

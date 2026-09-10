@@ -4588,6 +4588,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.useProgram(velocityProgram);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'), guiControls.dragMultiplier);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), guiControls.wind);
+    gl.uniform1f(gl.getUniformLocation(velocityProgram, 'uWindMultiplier'), windMultiplier); // must never be left at WebGL's implicit 0.0 default, or all wind force is silently suppressed
     gl.useProgram(lightingProgram);
     gl.uniform1f(gl.getUniformLocation(lightingProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
     gl.uniform1f(gl.getUniformLocation(lightingProgram, 'greenhouseGases'), guiControls.greenhouseGases);
@@ -4716,31 +4717,27 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .listen(); // stays in sync when a station is instead picked from the on-screen marker bar
 
     // One-time seed from whatever the setup screen had configured, so the in-game date starts somewhere
-    // sensible -- from here on, getInGameSoundingEpochTime() (used by loadStationForForcing()) reads
-    // ONLY guiControls.soundingDate/soundingHour below, never lastSoundingEpochTime again.
+    // sensible -- from here on, getInGameSoundingEpochTime() (used by loadStationForForcing()) reads ONLY
+    // guiControls.soundingDate/soundingHour, never lastSoundingEpochTime again. Date/hour controls themselves
+    // now live in the glassmorphism widget built by setupSoundingDateTimeWidget(), not dat.GUI (see below).
     if (lastSoundingEpochTime !== null) {
       const seedDate = new Date(lastSoundingEpochTime * 1000);
       guiControls.soundingDate = seedDate.toISOString().slice(0, 10);
       guiControls.soundingHour = seedDate.getUTCHours() >= 12 ? 12 : 0;
     }
 
-    fluidParams_folder.add(guiControls, 'soundingDate')
-      .name('Sounding Date (YYYY-MM-DD)')
-      .onChange(function() { loadStationForForcing(guiControls.activeSoundingStation); });
-
-    fluidParams_folder.add(guiControls, 'soundingHour', {'00Z' : 0, '12Z' : 12})
-      .name('Sounding Hour')
-      .onChange(function() { loadStationForForcing(guiControls.activeSoundingStation); });
-
     fluidParams_folder.add(guiControls, 'showStationMarkers')
       .name('Show Station Markers')
       .onChange(function() {
         const bar = document.getElementById('stationMarkersBar');
         const status = document.getElementById('stationMarkerStatus');
+        const dateTimeWidget = document.getElementById('soundingDateTimeWidget');
         if (bar)
           bar.style.display = guiControls.showStationMarkers ? 'block' : 'none';
         if (status)
           status.style.display = guiControls.showStationMarkers ? 'block' : 'none';
+        if (dateTimeWidget)
+          dateTimeWidget.style.display = guiControls.showStationMarkers ? 'flex' : 'none';
       });
 
     fluidParams_folder.open(); // Sounding Forcing + station switcher should be visible immediately, not behind a collapsed folder
@@ -5237,6 +5234,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     tornadoWarningCtx = tornadoWarningCanvas.getContext('2d');
 
     setupStationMarkers();
+    setupSoundingDateTimeWidget();
     setupWindResetUI();
 
     simDateTime = new Date(2000, Math.floor(guiControls.month) - 1, (guiControls.month % 1) * 30.417);
@@ -5266,9 +5264,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     return Date.UTC(year, month - 1, day, hour, 0, 0) / 1000;
   }
 
-  // Shared by both the on-screen marker bar and the "Sounding Station" dropdown right next to the
-  // Sounding Forcing slider (see setupDatGui()'s fluidParams_folder) -- whichever UI the player uses to
-  // switch stations, this is the one place that actually fetches the real data and re-pushes it into the
+  // Shared by the on-screen marker bar, the "Sounding Station" dropdown right next to the Sounding
+  // Forcing slider (see setupDatGui()'s fluidParams_folder), and the glassmorphism date/hour widget
+  // (setupSoundingDateTimeWidget()) -- whichever UI the player uses to switch stations or change the
+  // date/hour, this is the one place that actually fetches the real data and re-pushes it into the
   // live simulation, and keeps every other station-switching control in sync afterward.
   async function loadStationForForcing(key)
   {
@@ -5276,8 +5275,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     if (statusEl)
       statusEl.textContent = 'Chargement du sondage réel Meteociel pour ' + key + '...';
 
-    // Reads exclusively from the in-game "Sounding Date"/"Sounding Hour" dat.GUI controls (fluidParams_folder)
-    // -- never the setup screen's lastSoundingEpochTime, which only ever seeds their initial value once.
+    // Reads exclusively from guiControls.soundingDate/soundingHour, driven by the glassmorphism
+    // date/hour widget -- never the setup screen's lastSoundingEpochTime, which only ever seeds
+    // their initial value once (see setupDatGui()).
     const epochTime = getInGameSoundingEpochTime();
 
     if (epochTime === null) {
@@ -5295,7 +5295,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
 
     soundingData = table;
-    updateSoundingForcingUniforms(); // live-updates what the running sim's soundingForcing pulls toward -- resets windSoundingFactor to full strength
+    updateSoundingForcingUniforms(); // live-updates what the running sim's soundingForcing pulls toward
 
     guiControls.activeSoundingStation = key; // syncs the dropdown (its .listen()) even when picked from the marker bar instead
 
@@ -5311,11 +5311,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   }
 
   // Real Meteociel radiosonde station pins, overlaid directly on the main game view (no separate map) --
-  // click one to load ITS real archived sounding (at the Date/Hour set in the dat.GUI "Sounding Date"/
-  // "Sounding Hour" controls, see getInGameSoundingEpochTime()) and push it live into the running sim's
-  // Sounding Forcing. On by default (guiControls.showStationMarkers) so the stations are immediately
-  // usable, not tucked behind a disabled toggle -- that checkbox only exists to declutter the screen for
-  // players who don't want it.
+  // click one to load ITS real archived sounding (at the Date/Hour set in the glassmorphism date/hour
+  // widget, see setupSoundingDateTimeWidget() and getInGameSoundingEpochTime()) and push it live into the
+  // running sim's Sounding Forcing. On by default (guiControls.showStationMarkers) so the stations are
+  // immediately usable, not tucked behind a disabled toggle -- that checkbox only exists to declutter the
+  // screen for players who don't want it.
   function setupStationMarkers()
   {
     const bar = document.createElement('div');
@@ -5367,6 +5367,66 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
   }
 
+  // Floating glassmorphism date/hour widget for the in-game Sounding Forcing, replacing the old austere
+  // dat.GUI "Sounding Date"/"Sounding Hour" text controls. Sits just above the station markers bar (bottom
+  // of screen) since there's no separate in-game Émagramme panel or search bar to dock next to. Any change
+  // here writes into guiControls.soundingDate/soundingHour (read by getInGameSoundingEpochTime()) and
+  // immediately reloads the active station's real Meteociel archive via loadStationForForcing().
+  function setupSoundingDateTimeWidget()
+  {
+    const widget = document.createElement('div');
+    widget.id = 'soundingDateTimeWidget';
+    widget.className = 'sounding-datetime-widget';
+    document.body.appendChild(widget);
+    widget.style.position = 'fixed';
+    widget.style.right = '8px';
+    widget.style.bottom = '60px';
+    widget.style.zIndex = 4;
+    widget.style.display = guiControls.showStationMarkers ? 'flex' : 'none';
+
+    const dateInput = document.createElement('input');
+    dateInput.type = 'date';
+    dateInput.id = 'soundingDateInput';
+    dateInput.value = guiControls.soundingDate;
+    widget.appendChild(dateInput);
+
+    const btn00Z = document.createElement('button');
+    btn00Z.type = 'button';
+    btn00Z.className = 'hour-btn';
+    btn00Z.textContent = '00Z';
+    widget.appendChild(btn00Z);
+
+    const btn12Z = document.createElement('button');
+    btn12Z.type = 'button';
+    btn12Z.className = 'hour-btn';
+    btn12Z.textContent = '12Z';
+    widget.appendChild(btn12Z);
+
+    function refreshHourButtons()
+    {
+      btn00Z.classList.toggle('active', guiControls.soundingHour === 0);
+      btn12Z.classList.toggle('active', guiControls.soundingHour === 12);
+    }
+    refreshHourButtons();
+
+    dateInput.addEventListener('change', function() {
+      guiControls.soundingDate = dateInput.value;
+      loadStationForForcing(guiControls.activeSoundingStation);
+    });
+
+    btn00Z.addEventListener('click', function() {
+      guiControls.soundingHour = 0;
+      refreshHourButtons();
+      loadStationForForcing(guiControls.activeSoundingStation);
+    });
+
+    btn12Z.addEventListener('click', function() {
+      guiControls.soundingHour = 12;
+      refreshHourButtons();
+      loadStationForForcing(guiControls.activeSoundingStation);
+    });
+  }
+
   // Progress bar shown while startWindReset() fades guiControls.wind to 0.
   function setupWindResetUI()
   {
@@ -5411,17 +5471,37 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   var windResetAnimationId = null;
 
-  // Reset Wind touches ONLY two existing uniforms, via a plain lerp to 0 over 5 seconds -- it never
-  // reaches into the velocity grid (base[VX]/base[VY]) directly. Directly rewriting the velocity field
-  // bypasses the pressure-projection step that keeps it divergence-free, injecting spurious divergence the
-  // solver then has to fight -- visible as vertical-line artifacts. Uniforms are safe because they only
-  // ever feed into the solver's own existing, already-stable forcing terms:
-  //  1) guiControls.wind: the global wind bias uniform in velocityProgram (base[VX] += wind * 1e-6 there);
-  //  2) windSoundingFactor: scales the wind Sounding Forcing keeps injecting every iteration
-  //     (advectionShader.frag's velDiff term pulls toward realWorldSounding_Velv * windSoundingFactor).
-  // Once both reach 0, nothing is pushing the fluid anymore -- the solver's own natural viscosity/drag
-  // (dragMultiplier, vorticity confinement's own damping) brings any remaining motion to rest on its own,
-  // smoothly and without a second, competing forcing term fighting it.
+  // 1.0 = normal; ramped to 0.0 by startWindReset() below. Uploaded to BOTH velocityProgram (scales the
+  // global wind force) and advectionProgram (scales the Sounding Forcing's own wind injection, and drives
+  // a small Rayleigh-friction damping term on base[VX] while below 1.0) -- see the uniform declarations in
+  // velocityShader.frag / advectionShader.frag. Never touches the velocity grid directly.
+  var windMultiplier = 1.0;
+
+  function uploadWindMultiplier()
+  {
+    gl.useProgram(velocityProgram);
+    gl.uniform1f(gl.getUniformLocation(velocityProgram, 'uWindMultiplier'), windMultiplier);
+
+    gl.useProgram(advectionProgram);
+    gl.uniform1f(gl.getUniformLocation(advectionProgram, 'uWindMultiplier'), windMultiplier);
+  }
+
+  // Reset Wind touches ONLY existing shader uniforms via a plain lerp over 5 seconds -- it never reaches
+  // into the velocity grid (base[VX]/base[VY]) directly. Directly rewriting the velocity field bypasses
+  // the pressure-projection step that keeps it divergence-free, injecting spurious divergence the solver
+  // then has to fight -- visible as vertical-line artifacts. Three things fade to 0 together:
+  //  1) guiControls.wind, the global wind bias (base[VX] += wind * uWindMultiplier * 1e-6 in velocityProgram);
+  //  2) windMultiplier itself, which ALSO scales the Sounding Forcing's own wind injection in
+  //     advectionProgram (velDiff * ... * uWindMultiplier) to nothing;
+  //  3) a small Rayleigh friction term in advectionProgram, proportional to (1 - uWindMultiplier), which
+  //     gently bleeds off whatever momentum the fluid already has while (1)/(2) are cutting the forcing --
+  //     without it, existing wind would just keep advecting under its own inertia once the forces feeding
+  //     it are gone, since neither (1) nor (2) erase momentum that already exists.
+  // Once uWindMultiplier reaches 0 (forces cut, friction at its gentle peak), the solver settles the
+  // remaining motion out on its own. At the end, guiControls.wind is snapped to exactly 0, the sounding's
+  // wind profile is cleared to 0 (uploaded directly, "vide" rather than merely scaled), and uWindMultiplier
+  // is restored to 1.0 so the player can bring wind back in afterward -- the friction term then reads
+  // (1 - 1) = 0 and is inert again.
   // Shows #windResetProgress while it runs. Re-triggering while already running just restarts cleanly from
   // whatever the current values are. Bound to guiControls.resetWind (the dat.GUI "Réinitialiser les vents"
   // button). The Wind slider has .listen() so it visually tracks guiControls.wind falling during this.
@@ -5435,7 +5515,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     const fillEl = document.getElementById('windResetProgressFill');
 
     const startWind = guiControls.wind;
-    const startWindSoundingFactor = windSoundingFactor;
+    const startWindMultiplier = windMultiplier;
     const durationMs = 5000;
     const startTime = performance.now();
 
@@ -5450,8 +5530,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.useProgram(velocityProgram);
       gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), guiControls.wind);
 
-      windSoundingFactor = mixGeneric(startWindSoundingFactor, 0, t);
-      updateSoundingWindUniform();
+      windMultiplier = mixGeneric(startWindMultiplier, 0, t);
+      uploadWindMultiplier();
 
       const pct = Math.round(t * 100);
       if (labelEl)
@@ -5466,8 +5546,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(velocityProgram);
         gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), 0);
 
-        windSoundingFactor = 0;
-        updateSoundingWindUniform();
+        // Empty the sounding's wind profile outright (not just scaled) before restoring the multiplier.
+        gl.useProgram(advectionProgram);
+        gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Velv'), new Float32Array(608));
+
+        windMultiplier = 1.0; // disengage: forces are already at 0 and the profile is empty, so this is a no-op until wind/a new station reintroduces something
+        uploadWindMultiplier();
 
         windResetAnimationId = null;
         if (progressEl)
@@ -7207,43 +7291,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   // generate sounding data for forcing in sim
 
-  // 1 = the sounding's own real wind is injected at full strength (advectionShader.frag's velDiff term
-  // pulls toward the real realWorldSounding_Velv profile as usual); 0 = fully suppressed (pulls toward 0
-  // instead), which is what lets startWindReset() actually neutralize the wind even with Sounding Forcing
-  // active. Reset to 1 by updateSoundingForcingUniforms() whenever a station's data is (re)loaded, since
-  // picking a station implies wanting its real wind too -- only the wind-reset button suppresses it.
-  var windSoundingFactor = 1.0;
-
-  // Rebuilds and re-uploads ONLY realWorldSounding_Velv, scaled by windSoundingFactor. Split out from
-  // updateSoundingForcingUniforms() below so startWindReset() can fade just the wind component every
-  // frame without redoing the (identical, unrelated) temperature/moisture work each time.
-  function updateSoundingWindUniform()
-  {
-    var realWorldSounding_Vel = new Float32Array(608); // 152 vec4 = up to sim_res_y + 1 = 607
-
-    if (soundingData && soundingData.length > 10) {
-      var soundingForSim = rawSoundingToSimSounding(soundingData, guiControls.simHeight, sim_res_y + 1);
-      for (var y = 0; y < sim_res_y + 1; y++)
-        realWorldSounding_Vel[y] = soundingForSim[y].vel * windSoundingFactor;
-    }
-
-    gl.useProgram(advectionProgram);
-    gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Velv'), realWorldSounding_Vel);
-  }
-
-  // Rebuilds the realWorldSounding_T/W uniform arrays from the current global `soundingData` and
-  // (re-)uploads them to advectionProgram, plus the wind array via updateSoundingWindUniform() (with
-  // windSoundingFactor reset to full strength). Called once here during setup, and again later whenever
-  // the player picks a different real station's sounding from the in-game station markers or the Sounding
-  // Station dropdown (see loadStationForForcing()) -- soundingForcing (the slider right below) continuously
-  // relaxes the live simulation toward whatever these currently hold, so re-uploading a new station's
-  // profile here changes what the running sim is being pulled toward, without restarting it.
+  // Rebuilds the realWorldSounding_T/W/Vel uniform arrays from the current global `soundingData` and
+  // (re-)uploads them to advectionProgram, always at full real strength -- how much of the wind component
+  // actually gets injected into the simulation is controlled purely by the uWindMultiplier uniform in the
+  // shader itself (see startWindReset()), not by pre-scaling this data. Called once here during setup, and
+  // again later whenever the player picks a different real station's sounding from the in-game station
+  // markers or the Sounding Station dropdown (see loadStationForForcing()) -- soundingForcing (the slider
+  // right below) continuously relaxes the live simulation toward whatever these currently hold, so
+  // re-uploading a new station's profile here changes what the running sim is being pulled toward, without
+  // restarting it.
   function updateSoundingForcingUniforms()
   {
-    windSoundingFactor = 1.0; // a freshly (re)loaded station's own real wind always starts at full strength
-
-    var realWorldSounding_T = new Float32Array(608); // 152 vec4 = up to sim_res_y + 1 = 607
-    var realWorldSounding_W = new Float32Array(608); // 152 vec4 = up to sim_res_y + 1 = 607
+    var realWorldSounding_T = new Float32Array(608);   // 152 vec4 = up to sim_res_y + 1 = 607
+    var realWorldSounding_W = new Float32Array(608);   // 152 vec4 = up to sim_res_y + 1 = 607
+    var realWorldSounding_Vel = new Float32Array(608); // 152 vec4 = up to sim_res_y + 1 = 607
 
     if (soundingData && soundingData.length > 10) {
       var soundingForSim = rawSoundingToSimSounding(soundingData, guiControls.simHeight, sim_res_y + 1);
@@ -7254,9 +7315,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         realWorldSounding_T[y] = realToPotentialT(CtoK(soundingSample.t), y); // initial temperature profile
         realWorldSounding_W[y] = maxWater(CtoK(soundingSample.td), y);        // initial temperature profile
+        realWorldSounding_Vel[y] = soundingSample.vel;
       }
       // console.log(realWorldSounding_T);
       // console.log(realWorldSounding_W);
+      // console.log(realWorldSounding_Vel);
     } else {
       console.log('No valid sounding loaded!');
     }
@@ -7264,8 +7327,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.useProgram(advectionProgram);
     gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Tv'), realWorldSounding_T);
     gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Wv'), realWorldSounding_W);
-
-    updateSoundingWindUniform();
+    gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Velv'), realWorldSounding_Vel);
   }
 
   // generate Initial temperature profile
@@ -7302,6 +7364,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1f(gl.getUniformLocation(advectionProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(advectionProgram, 'waterTemperature'),
                CtoK(guiControls.waterTemperature)); // can be changed by GUI input
+  gl.uniform1f(gl.getUniformLocation(advectionProgram, 'uWindMultiplier'), windMultiplier); // must never be left at WebGL's implicit 0.0 default, or all wind forcing is silently suppressed from the start
 
   updateSoundingForcingUniforms();
 
