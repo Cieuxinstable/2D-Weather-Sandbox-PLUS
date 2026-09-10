@@ -41,7 +41,15 @@ uniform float globalDrying;
 uniform float globalHeating;
 uniform float soundingForcing;
 uniform float waterTemperature;
-uniform float windResetFactor; // 1.0 = normal; ramped 1.0 -> 0.0 over ~5s by startWindReset() in app.js, applied directly to the advected horizontal velocity field itself (not just a forcing bias), grid-wide, so existing wind momentum is actually flushed out rather than merely no longer re-added
+// 0 = inactive; a small per-ITERATION relaxation rate while startWindReset() is running in app.js, pulling
+// the advected horizontal velocity field toward 0 -- structurally the exact same relaxation pattern as the
+// Sounding Forcing's own velDiff term below (base[VX] -= velDiff * rate), just with an implicit target of
+// 0 instead of the sounding's wind. app.js recomputes this every JS tick from the ACTUAL elapsed real time
+// and the current iterations-per-frame, so the total decay stays smooth and iteration-count-independent --
+// never a single large multiplicative snap (that used to collapse the field within one rendered frame,
+// long before the 5s progress bar finished, causing a hard discontinuity the pressure solve then had to
+// fight, visible as vertical-line artifacts).
+uniform float windResetRate;
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -92,7 +100,7 @@ void main()
     // ADVECT AIR:
 
     base[VX] = bilerp(baseTex, fragCoord - velAtVx).x;
-    base[VX] *= windResetFactor; // direct flush of the horizontal velocity FIELD during a wind reset -- see uniform declaration above
+    base[VX] -= base[VX] * windResetRate; // relaxation toward 0 during a wind reset -- see uniform declaration above
     base[VY] = bilerp(baseTex, fragCoord - velAtVy).y;
 
     base[PRESSURE] = bilerpWall(baseTex, wallTex, fragCoord - velAtP)[PRESSURE];

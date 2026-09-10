@@ -454,6 +454,11 @@ var geocodedCity = null; // {lat, lon, label}
 // station's real sounding -- see setupStationMarkers() in mainScript().
 var lastSoundingEpochTime = null;
 
+// Set by the in-game Date/Hour (00Z/12Z) selectors (see setupStationMarkers()) once they exist -- takes
+// priority over lastSoundingEpochTime in loadStationForForcing(), so switching station in-game queries
+// exactly the archive slot chosen there instead of silently reusing whatever the setup screen had.
+var inGameSoundingEpochTime = null;
+
 // City search for the sounding station picker: sits alongside the existing <select id="stationSelect">
 // (never replaces it) and layers two lookup paths on top of it as the user types --
 //  1) an instant, local, offline filter of that dropdown's own preset stations, with auto-load as soon
@@ -4730,10 +4735,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .onChange(function() {
         const bar = document.getElementById('stationMarkersBar');
         const status = document.getElementById('stationMarkerStatus');
+        const dateTimeRow = document.getElementById('stationMarkerDateTimeRow');
         if (bar)
           bar.style.display = guiControls.showStationMarkers ? 'block' : 'none';
         if (status)
           status.style.display = guiControls.showStationMarkers ? 'block' : 'none';
+        if (dateTimeRow)
+          dateTimeRow.style.display = guiControls.showStationMarkers ? 'flex' : 'none';
       });
 
     fluidParams_folder.open(); // Sounding Forcing + station switcher should be visible immediately, not behind a collapsed folder
@@ -5253,15 +5261,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     if (statusEl)
       statusEl.textContent = 'Chargement du sondage réel Meteociel pour ' + key + '...';
 
-    // Prefer the exact date/hour explicitly picked on the setup screen; only if that's somehow unset does
-    // this fall back to "now" -- and even then, rounded down to the latest real synoptic hour (00Z/12Z)
-    // rather than the literal current minute, which no archive would ever have.
-    const epochTime = lastSoundingEpochTime !== null ? lastSoundingEpochTime : roundToLatestSynopticEpoch(Math.floor(Date.now() / 1000));
+    // Prefers the in-game Date/Hour (00Z/12Z) selectors (see setupStationMarkers()) so switching station
+    // in-game queries exactly the archive slot the player picked there; falls back to whatever was chosen
+    // on the setup screen if those don't exist yet, and only as a last resort to "now" -- rounded down to
+    // the latest real synoptic hour rather than the literal current minute, which no archive would ever have.
+    const epochTime = inGameSoundingEpochTime !== null      ? inGameSoundingEpochTime
+                      : lastSoundingEpochTime !== null       ? lastSoundingEpochTime
+                                                              : roundToLatestSynopticEpoch(Math.floor(Date.now() / 1000));
     const table = await loadStationSounding(soundingStations[key].id, epochTime);
 
     if (!table) {
       if (statusEl)
-        statusEl.textContent = '⚠ Pas de sondage réel Meteociel pour ' + key + ' à cette date/heure.';
+        statusEl.textContent = '⚠ Sondage Meteociel indisponible pour ce créneau (' + key + ').';
       return false;
     }
 
@@ -5282,10 +5293,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   }
 
   // Real Meteociel radiosonde station pins, overlaid directly on the main game view (no separate map) --
-  // click one to load ITS real archived sounding (at whatever date/hour was last configured on the setup
-  // screen, see lastSoundingEpochTime) and push it live into the running sim's Sounding Forcing. On by
-  // default (guiControls.showStationMarkers) so the stations are immediately usable, not tucked behind a
-  // disabled toggle -- that checkbox only exists to declutter the screen for players who don't want it.
+  // click one to load ITS real archived sounding (at the Date/Hour selected right here, see
+  // inGameSoundingEpochTime) and push it live into the running sim's Sounding Forcing. On by default
+  // (guiControls.showStationMarkers) so the stations are immediately usable, not tucked behind a disabled
+  // toggle -- that checkbox only exists to declutter the screen for players who don't want it.
   function setupStationMarkers()
   {
     const bar = document.createElement('div');
@@ -5316,6 +5327,59 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     statusEl.style.color = 'white';
     statusEl.style.textShadow = '1px 1px 2px black';
     statusEl.style.display = guiControls.showStationMarkers ? 'block' : 'none';
+
+    // Date/Hour (00Z/12Z) selectors, right next to the marker bar/status line -- switching station via
+    // either the markers below or the "Sounding Station" dropdown (fluidParams_folder) queries exactly
+    // this slot, not "now" (see loadStationForForcing()).
+    const dateTimeRow = document.createElement('div');
+    dateTimeRow.id = 'stationMarkerDateTimeRow';
+    document.body.appendChild(dateTimeRow);
+    dateTimeRow.style.position = 'fixed';
+    dateTimeRow.style.right = '8px';
+    dateTimeRow.style.bottom = '52px';
+    dateTimeRow.style.zIndex = 4;
+    dateTimeRow.style.display = guiControls.showStationMarkers ? 'flex' : 'none';
+    dateTimeRow.style.alignItems = 'center';
+    dateTimeRow.style.gap = '4px';
+    dateTimeRow.style.fontFamily = 'Monospace';
+    dateTimeRow.style.fontSize = '12px';
+    dateTimeRow.style.color = 'white';
+    dateTimeRow.style.textShadow = '1px 1px 2px black';
+
+    const initialEpoch = lastSoundingEpochTime !== null ? lastSoundingEpochTime : roundToLatestSynopticEpoch(Math.floor(Date.now() / 1000));
+    inGameSoundingEpochTime = initialEpoch;
+    const initialDate = new Date(initialEpoch * 1000);
+
+    const dateLabel = document.createElement('span');
+    dateLabel.textContent = 'Sondage:';
+    dateTimeRow.appendChild(dateLabel);
+
+    const dateInput = document.createElement('input');
+    dateInput.type = 'date';
+    dateInput.id = 'inGameSoundingDate';
+    dateInput.value = initialDate.toISOString().slice(0, 10);
+    dateInput.style.fontFamily = 'Monospace';
+    dateTimeRow.appendChild(dateInput);
+
+    const hourSelect = document.createElement('select');
+    hourSelect.id = 'inGameSoundingHour';
+    for (const h of [ 0, 12 ]) {
+      const opt = document.createElement('option');
+      opt.value = h;
+      opt.textContent = (h < 10 ? '0' + h : h) + 'Z';
+      hourSelect.appendChild(opt);
+    }
+    hourSelect.value = initialDate.getUTCHours() >= 12 ? '12' : '0';
+    dateTimeRow.appendChild(hourSelect);
+
+    function updateInGameSoundingEpoch()
+    {
+      const [ y, m, d ] = dateInput.value.split('-').map(Number);
+      const hour = parseInt(hourSelect.value, 10);
+      inGameSoundingEpochTime = Date.UTC(y, m - 1, d, hour, 0, 0) / 1000;
+    }
+    dateInput.addEventListener('change', updateInGameSoundingEpoch);
+    hourSelect.addEventListener('change', updateInGameSoundingEpoch);
 
     for (const key of Object.keys(soundingStations)) {
       const btn = document.createElement('button');
@@ -5381,17 +5445,34 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   var windResetAnimationId = null;
 
-  // Smoothly fades three independent things to 0 together over a few seconds, instead of just the first:
-  //  1) guiControls.wind, the global wind bias uniform in velocityProgram;
+  // Smoothly relaxes three independent things toward 0 together over a few seconds, instead of just the
+  // first:
+  //  1) guiControls.wind, the global wind bias uniform in velocityProgram (a tiny additive force per
+  //     iteration -- fading it linearly per JS tick is fine, it doesn't compound);
   //  2) windSoundingFactor, which scales the wind Sounding Forcing keeps injecting every frame
-  //     (advectionShader.frag's velDiff term pulls toward realWorldSounding_Velv regardless of (1));
-  //  3) windResetFactor, applied directly to the advected horizontal velocity FIELD itself
-  //     (base[VX] *= windResetFactor, grid-wide, in advectionShader.frag) -- (1) and (2) only stop
-  //     REintroducing wind; they don't erase momentum the fluid already has. Without this third factor,
-  //     existing velocity just kept advecting along under its own inertia and the "reset" had no visible
-  //     effect. Shows #windResetProgress while it runs. Re-triggering while already running just restarts
-  //     cleanly from whatever the current values are. Bound to guiControls.resetWind (the dat.GUI
-  //     "Réinitialiser les vents" button).
+  //     (advectionShader.frag's velDiff term pulls toward realWorldSounding_Velv regardless of (1)) --
+  //     also fine to fade linearly per tick, since it only scales a relaxation TARGET, not the field itself;
+  //  3) the advected horizontal velocity FIELD itself, via windResetRate -- (1) and (2) only stop
+  //     REintroducing wind, they don't erase momentum the fluid already has.
+  //
+  // (3) needs care that (1)/(2) don't: advectionShader.frag's relaxation runs once per SIMULATION
+  // ITERATION, and several iterations (guiControls.IterPerFrame) run per JS tick. An earlier version
+  // uploaded a single JS-tick-computed factor and let the shader reapply it unchanged to every one of
+  // those iterations -- which compounds multiplicatively (factor^IterPerFrame), collapsing the field to
+  // ~0 within a single rendered frame instead of over 5 seconds, which is exactly the kind of sudden,
+  // grid-wide discontinuity that shocks the pressure solve (visible as vertical-line artifacts) rather
+  // than the gentle, gradual relaxation the Sounding Forcing itself uses.
+  //
+  // The fix: treat this as a genuine exponential relaxation toward 0 (half-life style, matching the
+  // Sounding Forcing's own velDiff-relaxation shape) with a rate constant picked so the field has decayed
+  // to ~0.1% of its start value by the end of the real-time window, then re-derive, every JS tick, the
+  // PER-ITERATION rate that spreads that tick's slice of the decay evenly across however many simulation
+  // iterations actually run before the next tick -- so the total decay over wall-clock time stays smooth
+  // and independent of iteration throughput, never a single large jump.
+  //
+  // Shows #windResetProgress while it runs. Re-triggering while already running just restarts cleanly from
+  // whatever the current values are. Bound to guiControls.resetWind (the dat.GUI "Réinitialiser les vents"
+  // button).
   function startWindReset()
   {
     if (windResetAnimationId !== null)
@@ -5405,12 +5486,22 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     const startWindSoundingFactor = windSoundingFactor;
     const durationMs = 5000;
     const startTime = performance.now();
+    let lastTickTime = startTime;
+
+    // k such that exp(-k * duration) == targetRemainingFraction: the field is down to ~0.1% of its
+    // starting value (not bit-exact 0 -- an exponential relaxation only approaches 0 asymptotically) by
+    // the time the progress bar reaches 100%, at which point it's snapped to exact 0 once explicitly.
+    const targetRemainingFraction = 0.001;
+    const decayConstantPerSecond = -Math.log(targetRemainingFraction) / (durationMs / 1000);
 
     if (progressEl)
       progressEl.style.display = 'block';
 
     function tick(now)
     {
+      const dtSeconds = Math.max((now - lastTickTime) / 1000, 0);
+      lastTickTime = now;
+
       const t = clamp((now - startTime) / durationMs, 0, 1);
       const remaining = 1 - t;
 
@@ -5421,8 +5512,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       windSoundingFactor = startWindSoundingFactor * remaining;
       updateSoundingWindUniform();
 
+      // Spread this tick's slice of the overall exponential decay evenly across however many simulation
+      // iterations will actually run before the next tick, so the cumulative effect matches the intended
+      // smooth real-time curve regardless of IterPerFrame.
+      const itersThisTick = Math.max(guiControls.IterPerFrame, 1);
+      const perIterationRemainingFraction = Math.exp(-decayConstantPerSecond * dtSeconds / itersThisTick);
+      const windResetRate = clamp(1 - perIterationRemainingFraction, 0, 1);
+
       gl.useProgram(advectionProgram);
-      gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windResetFactor'), remaining);
+      gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windResetRate'), t < 1 ? windResetRate : 1.0);
 
       const pct = Math.round(t * 100);
       if (labelEl)
@@ -5439,21 +5537,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         windSoundingFactor = 0;
         updateSoundingWindUniform();
-
-        gl.useProgram(advectionProgram);
-        gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windResetFactor'), 0.0);
+        // windResetRate was already uploaded as 1.0 above for this final tick -- an exact, one-time full
+        // relaxation to 0, snapping away the last ~0.1% the asymptotic decay never quite reaches.
 
         windResetAnimationId = null;
         if (progressEl)
           progressEl.style.display = 'none';
 
-        // The field is now flushed to exactly 0 (base[VX] *= 0.0), but the main sim loop runs on its own
-        // requestAnimationFrame independent of this one, so give it a moment to actually consume that 0
-        // before disengaging the multiplier -- reverting to 1.0 on this same tick could otherwise race it
-        // and the shader might never actually see factor=0 applied at all.
+        // The main sim loop runs on its own requestAnimationFrame independent of this one, so give it a
+        // moment to actually consume that final rate=1.0 pass before disengaging -- reverting on this same
+        // tick could otherwise race it and the shader might never actually see it applied at all.
         setTimeout(() => {
           gl.useProgram(advectionProgram);
-          gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windResetFactor'), 1.0); // disengage: field is already 0, so this is a no-op from here on until the next reset
+          gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windResetRate'), 0.0); // disengage: field is already 0, so this is a no-op from here on until the next reset
         }, 100);
       }
     }
@@ -7285,7 +7381,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1f(gl.getUniformLocation(advectionProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(advectionProgram, 'waterTemperature'),
                CtoK(guiControls.waterTemperature)); // can be changed by GUI input
-  gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windResetFactor'), 1.0); // inert until startWindReset() ramps it down
+  gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windResetRate'), 0.0); // inert until startWindReset() ramps it up
 
   updateSoundingForcingUniforms();
 
