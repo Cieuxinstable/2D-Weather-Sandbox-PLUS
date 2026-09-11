@@ -142,21 +142,30 @@ async function scrapeTableData(url)
 
 function soundingTableUrl(stationID, timeStamp) { return 'https://www.meteociel.fr/cartes_obs/sondage_display.php?id=' + stationID + '&map=4&date=' + timeStamp; }
 
-// A real sounding table has a modest number of discrete mandatory pressure levels (typically a couple
-// dozen) listed in strictly increasing pressure order (index 0 = top of atmosphere down to the surface).
-// This is 'p', not 'alt': the reported geopotential height can have minor local quirks near the top of
-// the sounding on real data (harmless there since the sim never reaches that high), so pressure is the
-// reliable invariant to check. meteociel occasionally serves a fallback/error page for a station with no
-// observation at the requested date/hour, and scrapeTableData's `table:nth-of-type(2)` selector can then
-// latch onto an unrelated, much larger table elsewhere on that page -- this rejects results that don't
-// look like an actual sounding, rather than silently feeding bad data into the sim.
+// A real sounding table lists pressure levels in non-decreasing order (index 0 = top of atmosphere down to
+// the surface, where pressure is highest). This is 'p', not 'alt': the reported geopotential height can
+// have minor local quirks near the top of the sounding on real data (harmless there since the sim never
+// reaches that high), so pressure is the reliable invariant to check. meteociel occasionally serves a
+// fallback/error page for a station with no observation at the requested date/hour, and scrapeTableData's
+// `table:nth-of-type(2)` selector can then latch onto an unrelated, much larger table elsewhere on that
+// page -- this rejects results that don't look like an actual sounding, rather than silently feeding bad
+// data into the sim.
+//
+// Some stations (confirmed live: Trappes/Paris) report "TEMP HD" (high-density) observations with several
+// thousand rows -- one every few meters of altitude -- rather than the ~40-70 row standard mandatory-level
+// table most stations return. The row cap here must stay comfortably above that, and consecutive rows in
+// an HD table very often round to the identical integer hPa value (pressure barely changes over a few
+// meters), so ties must be tolerated -- only an actual decrease (a scrambled/unrelated table) is rejected.
+// An earlier, stricter version of this check (length capped at 200, ties rejected) silently discarded
+// every real HD sounding, which is why some real stations/dates always failed to load despite the fetch
+// itself succeeding.
 function isPlausibleSoundingTable(table)
 {
-  if (!table || table.length < 2 || table.length > 200)
+  if (!table || table.length < 2 || table.length > 5000)
     return false;
 
   for (let i = 1; i < table.length; i++) {
-    if (table[i].p <= table[i - 1].p)
+    if (table[i].p < table[i - 1].p)
       return false;
   }
 
@@ -165,7 +174,22 @@ function isPlausibleSoundingTable(table)
 
 async function loadSoundingTable(stationID, timeStamp)
 {
-  const table = await scrapeTableData(soundingTableUrl(stationID, timeStamp));
+  const url = soundingTableUrl(stationID, timeStamp);
+
+  // Debug visibility into exactly what gets requested -- lets you verify in the browser console that the
+  // year/month/day/hour picked in the UI really match what's sent to Meteociel, instead of guessing from a
+  // generic "no sounding available" message.
+  const d = new Date(timeStamp * 1000);
+  console.log('Fetching sounding:', {
+    stationId : stationID,
+    year : d.getUTCFullYear(),
+    month : d.getUTCMonth() + 1,
+    day : d.getUTCDate(),
+    hour : d.getUTCHours(),
+    url : url,
+  });
+
+  const table = await scrapeTableData(url);
   return isPlausibleSoundingTable(table) ? table : null;
 }
 
@@ -193,6 +217,26 @@ function interpolateTableAtAltitude(table, targetAlt)
 }
 
 function isFutureTimestamp(timeStamp) { return timeStamp > Math.floor(Date.now() / 1000); } // no Meteociel archive has tomorrow's weather
+
+// Parses a native <input type="date">'s value into a UTC epoch (seconds) at the given hour. A native date
+// input's .value is ALWAYS "YYYY-MM-DD" per the HTML spec regardless of the browser's display locale (it
+// only ever *shows* it as DD/MM/YYYY, MM/DD/YYYY etc, never stores it that way) -- but parsing it with the
+// bare `new Date(str)` constructor is still risky: if that string is ever anything other than strict ISO
+// (a locale-fallback text input, a copy-pasted value, ...), `new Date(...)` silently guesses a format
+// (typically MM/DD/YYYY) instead of failing, which can swap month and day with no visible error. Explicit
+// regex extraction removes that ambiguity entirely and returns null (never NaN, which would otherwise flow
+// silently into isFutureTimestamp() and other math) for anything that isn't well-formed YYYY-MM-DD.
+function parseIsoDateToEpoch(isoDateStr, hour)
+{
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDateStr);
+  if (!m)
+    return null;
+
+  const year = parseInt(m[1], 10), month = parseInt(m[2], 10), day = parseInt(m[3], 10);
+  const hourNum = parseInt(hour, 10) || 0;
+
+  return Date.UTC(year, month - 1, day, hourNum, 0, 0) / 1000;
+}
 
 // Loads a single preset station's REAL Meteociel sounding only -- no synthetic/estimated fallback of any
 // kind. Returns null (never throws) for a future date, an unreachable proxy, or a station with no real
@@ -2407,15 +2451,10 @@ async function prepareSounding()
   const requestId = ++prepareSoundingRequestId;
 
   const dateSel = document.getElementById('datePicker');
-  const date = new Date(dateSel.value);
-  let epochTime = Math.floor(date.getTime() / 1000);
-
   const hourSelector = document.getElementById('hourSelector');
   const hour = hourSelector.options[hourSelector.selectedIndex].value;
 
-  epochTime += hour * 3600;
-
-  lastSoundingEpochTime = epochTime; // remembered for in-game station markers, which have no date picker of their own
+  const epochTime = parseIsoDateToEpoch(dateSel.value, hour);
 
   const statusEl = document.getElementById('soundingStatus');
   const titleEl = document.getElementById('soundingTitle');
@@ -2431,16 +2470,24 @@ async function prepareSounding()
 
   const NO_DATA_MESSAGE = 'Pas de sondage réel Meteociel disponible pour cette date/lieu. Veuillez choisir une date passée.';
 
-  function showNoRealData()
+  function showNoRealData(message)
   {
     if (statusEl) {
-      statusEl.textContent = NO_DATA_MESSAGE;
+      statusEl.textContent = message || NO_DATA_MESSAGE;
       statusEl.className = 'sounding-status error';
     }
     const canvas = document.getElementById('soundingCanvas');
     if (canvas)
       canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height); // no fabricated graph left on screen
   }
+
+  if (epochTime === null) { // datePicker.value wasn't a well-formed YYYY-MM-DD -- never send 'date=NaN'/'undefined' to Meteociel
+    console.log('Fetching sounding: aborted, invalid date value:', dateSel.value);
+    showNoRealData('⚠ Date invalide (format attendu : AAAA-MM-JJ).');
+    return;
+  }
+
+  lastSoundingEpochTime = epochTime; // remembered for in-game station markers, which have no date picker of their own
 
   if (isFutureTimestamp(epochTime)) { // no Meteociel archive can have a date that hasn't happened yet -- don't even try fetching
     showNoRealData();
@@ -5274,20 +5321,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
   }
 
-  // Reads the in-game "Sounding Date" (a plain YYYY-MM-DD text field) / "Sounding Hour" (00Z/12Z dropdown)
-  // dat.GUI controls in fluidParams_folder -- the ONLY source of truth for which Meteociel archive slot
-  // in-game station switching queries. Returns null if the date field doesn't parse as YYYY-MM-DD (the
-  // player typed something invalid into the dat.GUI text field).
+  // Reads guiControls.soundingDate/soundingHour -- set by the glassmorphism date/hour widget
+  // (setupSoundingDateTimeWidget()) -- the ONLY source of truth for which Meteociel archive slot in-game
+  // station switching queries. Returns null (via parseIsoDateToEpoch()) if the date isn't well-formed
+  // YYYY-MM-DD.
   function getInGameSoundingEpochTime()
   {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(guiControls.soundingDate);
-    if (!m)
-      return null;
-
-    const year = parseInt(m[1], 10), month = parseInt(m[2], 10), day = parseInt(m[3], 10);
-    const hour = parseInt(guiControls.soundingHour, 10) || 0;
-
-    return Date.UTC(year, month - 1, day, hour, 0, 0) / 1000;
+    return parseIsoDateToEpoch(guiControls.soundingDate, guiControls.soundingHour);
   }
 
   // Shared by the on-screen marker bar, the "Sounding Station" dropdown right next to the Sounding
