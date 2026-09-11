@@ -525,6 +525,14 @@
             border-radius: var(--border-radius);
         }
 
+        /* The rule above only styles the closed <select> box -- most browsers render the OPEN dropdown
+           list's <option> rows with the OS-native background (usually white) while still inheriting the
+           light `color` above, producing unreadable white-on-white text. Set both explicitly. */
+        #IntroScreen select option {
+            background-color: #1e293b !important;
+            color: #ffffff !important;
+        }
+
         .station-search-row {
             position: relative;
             margin-bottom: 0.75rem;
