@@ -374,7 +374,14 @@ function formatSoundingTime(timeStamp)
   return d.toLocaleDateString('fr-FR', {day : '2-digit', month : 'long', year : 'numeric', timeZone : 'UTC'}) + ' · ' + String(d.getUTCHours()).padStart(2, '0') + ' UTC';
 }
 
-const SIM_VEL_TARGET_MAX = 0.30; // cells/iteration, = VEL_SOFT in shaders/common.glsl
+// Sounding wind targets are clamped to the soft start of the velocity limiter (cells/iteration); updated from
+// the "Limite de vent" setting by applyWindLimit() once the simulation runs.
+var simVelTargetMax = 0.30;
+
+// Velocity unit conversions for the current grid: raw sim velocity is in cells/iteration, and the sim's pressure
+// waves ("speed of sound") travel exactly 1 cell/iteration, so the stable wind range depends on the cell size.
+const WIND_LIMIT_DEFAULT_RAW = 0.45; // safe default limit, cells/iteration
+function kmhPerRawVelocity(simHeight, resY) { return (simHeight / resY) / (timePerIteration * 3600) * 3.6; }
 
 function sampleIsInvalid(s) { return isNaN(s.t) || isNaN(s.td) || isNaN(s.vel); }
 
@@ -411,7 +418,7 @@ function rawSoundingToSimSounding(soundingData, simHeight, inSimSoundingRes)
 
     // Clamped to what the sim can carry stably (VEL_SOFT in common.glsl): a jet stream faster than that would
     // only make the forcing fight the velocity limiter.
-    const inSimVel = clamp(msToRawVelocity(twoDimentionalVel / 3.6), -SIM_VEL_TARGET_MAX, SIM_VEL_TARGET_MAX); // convert to m/s first
+    const inSimVel = clamp(msToRawVelocity(twoDimentionalVel / 3.6), -simVelTargetMax, simVelTargetMax); // convert to m/s first
 
     soundingForSim[y] = {'t' : s.t, 'td' : s.td, 'vel' : inSimVel}; // Put the requered data in an array of objects
   }
@@ -979,6 +986,7 @@ const guiControls_default = {
   soundingDate : '2025-06-15',      // in-game Sounding Date (YYYY-MM-DD); re-seeded from the setup screen's own date once mainScript() starts -- see setupDatGui()
   soundingHour : 12,                // in-game Sounding Hour (UTC, 0-23)
   windCeilingAlt : 8000,
+  windLimitKmh : 0,                 // flow speed limit (km/h) for numerical stability; 0 = automatic safe value for the grid
   skyEffects : true,                // sun disc, moon, stars and sunrise/sunset sky colors in the background            // meters. Above this altitude the wind (global wind force + sounding wind) fades smoothly to 0 at the top of the map
 };
 
@@ -5015,8 +5023,23 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   guiControls.gridResY = sim_res_y; // always reflects the live grid resolution, not a saved/default value
 
+  // Uploads the "Limite de vent" setting (km/h, 0 = automatic) as the velocity shader's velMax (cells/iteration)
+  // and the matching clamp for sounding wind targets.
+  function applyWindLimit()
+  {
+    const kmhPerRaw = kmhPerRawVelocity(guiControls.simHeight, sim_res_y);
+    if (!(guiControls.windLimitKmh > 0))
+      guiControls.windLimitKmh = Math.round(WIND_LIMIT_DEFAULT_RAW * kmhPerRaw);
+    const velMax = guiControls.windLimitKmh / kmhPerRaw;
+    gl.useProgram(velocityProgram);
+    gl.uniform1f(gl.getUniformLocation(velocityProgram, 'velMax'), velMax);
+    simVelTargetMax = velMax * 0.67;
+    updateSoundingForcingUniforms(); // re-clamp the sounding wind targets to the new limit
+  }
+
   function setGuiUniforms()
   { // set all uniforms to new values
+    applyWindLimit();
     gl.useProgram(boundaryProgram);
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'vorticity'), guiControls.vorticity);
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'landEvaporation'), guiControls.landEvaporation);
@@ -5137,6 +5160,23 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     // Wind ceiling: the wind force and the sounding's wind target both fade smoothly to 0 between this
     // altitude and the top of the map, so jet-stream winds never slam into the rigid top boundary. Set it to
     // the full sim height to disable.
+    // Wind speed limit: the sim's pressure waves move 1 cell per iteration, so how fast the wind can get before the
+    // flow becomes unstable depends on the cell size (coarser vertical resolution = faster stable winds).
+    {
+      const simHeightNow = guiControlsFromSaveFile == null ? sim_height : guiControls.simHeight;
+      const kmhPerRaw = kmhPerRawVelocity(simHeightNow, sim_res_y);
+      if (!(guiControls.windLimitKmh > 0))
+        guiControls.windLimitKmh = Math.round(WIND_LIMIT_DEFAULT_RAW * kmhPerRaw);
+      fluidParams_folder.add(guiControls, 'windLimitKmh', 20, Math.round(kmhPerRaw * 0.9), 5)
+        .onChange(function() {
+          applyWindLimit();
+        })
+        .name('Limite de vent (km/h)');
+      const hint = fluidParams_folder.__controllers[fluidParams_folder.__controllers.length - 1];
+      hint.domElement.parentElement.parentElement.title = 'Vitesse du son du simulateur à cette résolution : ' + Math.round(kmhPerRaw) +
+        ' km/h. Au-delà de ~' + Math.round(kmhPerRaw * 0.6) + ' km/h le calcul devient instable. Pour des jet-streams plus rapides, réduisez la résolution verticale (cellules plus grandes).';
+    }
+
     fluidParams_folder.add(guiControls, 'windCeilingAlt', 1000, guiControls.simHeight, 100)
       .onChange(function() {
         const taperStart = guiControls.windCeilingAlt / guiControls.simHeight;
