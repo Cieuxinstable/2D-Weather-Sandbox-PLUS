@@ -112,6 +112,7 @@ void main()
     // billows would form and nowhere else. A small minimum shear keeps calm or convective air with weak shear
     // untouched. Coefficient capped at 0.25 (explicit diffusion is stable up to 0.5); skipped next to walls so it
     // never acts as extra ground friction.
+    float billowDamping = 0.0; // > 0 in stably stratified layers that are shear-unstable, used for VY below
     if (shearSmoothing > 0.0) {
       ivec4 wallUp = texture(wallTex, texCoordX0Yp);
       ivec4 wallDown = texture(wallTex, texCoordX0Ym);
@@ -125,9 +126,15 @@ void main()
         float enoughShear = smoothstep(0.004, 0.010, S);                        // ~15 -> 35 km/h per km
         float mixing = 0.25 * unstable * enoughShear * shearSmoothing;
         base[VX] += mixing * (cellX0Yp.x + cellX0Ym.x - 2.0 * cellX0Y0.x);
+
+        // Billows also need vertical motion to roll up. Mixing momentum alone only slowed them down, so in layers
+        // that are stably stratified (N^2 > 0) yet shear-unstable, vertical velocity is damped too. Convection lives
+        // in unstable air (N^2 < 0) and is excluded, so storms and updrafts are not affected.
+        billowDamping = unstable * enoughShear * smoothstep(0.0, 1e-5, N2) * shearSmoothing;
       }
     }
     base[VY] = bilerp(baseTex, fragCoord - velAtVy).y;
+    base[VY] *= 1.0 - 0.08 * billowDamping;
 
     base[PRESSURE] = bilerpWall(baseTex, wallTex, fragCoord - velAtP)[PRESSURE];
     base[TEMPERATURE] = bilerpWall(baseTex, wallTex, fragCoord - velAtP)[TEMPERATURE];
