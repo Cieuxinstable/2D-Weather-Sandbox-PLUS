@@ -30,6 +30,7 @@ uniform vec3 view;          // camera Xpos Ypos Zoom
 uniform float sunAngle;     // solar zenith angle in radians, 0 = overhead, negative = sun on the left (morning), |angle| > PI/2 = below the horizon
 uniform float month;        // 1.0 .. 13.0, drives the moon phase
 uniform float skyEffects;   // 1.0 = sun, moon, stars, twilight colors; 0.0 = classic flat sky
+uniform vec2 screenSize;    // drawing buffer size in pixels: the sun and moon are placed in screen space
 
 out vec4 fragmentColor;
 
@@ -126,12 +127,13 @@ vec4 displayA380(vec2 pos, float angle, out vec3 emittedLight, out vec3 onLight)
 // Adapted from the 2D Weather Sandbox Extra fork by Weatherin2D (GPL-3.0,
 // https://github.com/Weatherin2D/2D-Weather-Sandbox-Extra), simplified to a single sun position driven by
 // the sim's own solar zenith angle and fixed palettes instead of per-column sun data and tunable uniforms.
-// Everything is in sim texture coordinates (texCoord: x across the map, y = 0 ground .. 1 top of the sim),
-// so the sun and moon stay anchored to the map like everything else.
+// The sun and moon live in screen space (S: pixels / screen height), like a real, infinitely far sun: they stay
+// in frame when panning or zooming, and only their height is tied to the ground horizon so they set behind it.
+// Sky colors and stars stay in sim texture coordinates (texCoord: x across the map, y = 0 ground .. 1 top).
 
 const float SKY_HORIZON = 0.0;       // texCoord.y of the visual horizon
-const float SUN_HORIZ_AMPLITUDE = 0.42;
-const float SUN_VERT_SCALE = 0.85;
+const float SUN_HORIZ_AMPLITUDE = 0.38; // fraction of the screen width either side of the center
+const float SUN_VERT_SCALE = 0.75;      // fraction of the screen height above the horizon at the zenith
 
 const vec3 TWILIGHT_TOP = vec3(0.02, 0.03, 0.10);
 const vec3 TWILIGHT_UPPER = vec3(0.10, 0.13, 0.32);
@@ -144,12 +146,9 @@ const vec3 HORIZON_GOLD = vec3(1.00, 0.72, 0.32);
 const vec3 HORIZON_PALE_GOLD = vec3(1.00, 0.88, 0.62);
 const vec3 CREPUSCULAR_COLOR = vec3(1.00, 0.74, 0.44);
 
-vec2 skyLocal(vec2 uv, vec2 center)
-{
-  vec2 d = uv - center;
-  d.x *= aspectRatios.x; // round in screen space
-  return d;
-}
+float horizonS; // screen-space height of the ground horizon, set in main()
+
+vec2 skyLocal(vec2 uv, vec2 center) { return uv - center; }
 
 float sunGlow(vec2 uv, vec2 center, float radius, float sharpness)
 {
@@ -167,7 +166,7 @@ vec3 renderSun(vec2 uv, vec2 center, float scatter, out float emit)
     return vec3(0.0);
   }
   float angle = atan(d.y, d.x);
-  float horizonClip = smoothstep(SKY_HORIZON - 0.002, SKY_HORIZON + 0.002, uv.y);
+  float horizonClip = smoothstep(horizonS - 0.002, horizonS + 0.002, uv.y);
 
   vec3 warmYellow = vec3(0.98, 0.78, 0.38);
   vec3 haloYellow = vec3(0.95, 0.68, 0.28);
@@ -250,10 +249,17 @@ void main()
     float zenith = sunAngle;
     float absZenith = abs(zenith);
     float sunElev = PI * 0.5 - absZenith;
-    float sunHoriz = 0.5 + SUN_HORIZ_AMPLITUDE * sin(zenith);
-    float sunVert = SKY_HORIZON + SUN_VERT_SCALE * sin(clamp(sunElev, -PI * 0.5, PI * 0.5));
+    // Screen-space frame: S in units of screen height, horizonS = screen height of the sim ground (texCoord.y = 0),
+    // kept within the lower part of the screen so the sun stays visible when the camera looks high up.
+    vec2 S = gl_FragCoord.xy / screenSize.y;
+    float texPerS = dFdy(texCoord.y) * screenSize.y;
+    horizonS = clamp(S.y - texCoord.y / max(texPerS, 1e-6), 0.04, 0.55);
+    float screenAspect = screenSize.x / screenSize.y;
+
+    float sunHoriz = screenAspect * (0.5 + SUN_HORIZ_AMPLITUDE * sin(zenith));
+    float sunRiseAmount = SUN_VERT_SCALE * sin(clamp(sunElev, -PI * 0.5, PI * 0.5));
+    float sunVert = horizonS + sunRiseAmount;
     vec2 sunCenter = vec2(sunHoriz, sunVert);
-    float sunRiseAmount = sunVert - SKY_HORIZON;
 
     float scatter = clamp(map_range(absZenith, 75.0 * deg2rad, 88.0 * deg2rad, 0.0, 1.0), 0.0, 1.0);
     float deepNightSky = clamp(map_range(absZenith, 88.0 * deg2rad, 96.0 * deg2rad, 0.0, 1.0), 0.0, 1.0);
@@ -277,7 +283,7 @@ void main()
     twilightSky = mix(twilightSky, TWILIGHT_UPPER * 0.75, smoothstep(0.28, 0.62, skyHeight));
     twilightSky = mix(twilightSky, TWILIGHT_TOP * 0.55, smoothstep(0.52, 0.86, skyHeight));
 
-    vec2 relSun = skyLocal(texCoord, vec2(sunHoriz, SKY_HORIZON + 0.04));
+    vec2 relSun = skyLocal(S, vec2(sunHoriz, horizonS + 0.04));
     float sunWarmth = exp(-length(relSun) * 1.2) * (0.35 + scatter * 0.30) * (1.0 - smoothstep(0.48, 0.88, skyHeight));
     twilightSky = mix(twilightSky, vec3(0.88, 0.62, 0.24), sunWarmth * twilightAmt * 0.55);
 
@@ -285,7 +291,7 @@ void main()
 
     // Horizon haze: sunrise deep red -> gold -> pale; sunset pale -> gold -> burnt orange -> deep red
     float horizonBand = exp(-pow(max(texCoord.y - SKY_HORIZON, 0.0) / 0.12, 2.0) * 0.7);
-    float sunProximity = exp(-pow((texCoord.x - sunHoriz) * aspectRatios.x * 0.8, 2.0));
+    float sunProximity = exp(-pow((S.x - sunHoriz) * 0.8, 2.0));
     float bandMask = horizonBand * (0.55 + sunProximity * 0.45);
 
     float riseT = smoothstep(0.02, 0.20, sunRiseAmount);
@@ -303,11 +309,11 @@ void main()
     mixedCol += hazeCol * bandMask * hazeBoost * sunProximity * 0.38 * smoothstep(0.22, 0.60, scatter + twilightAmt * 0.3);
 
     // Crepuscular rays fanning out from the low sun
-    vec2 rel = skyLocal(texCoord, sunCenter);
+    vec2 rel = skyLocal(S, sunCenter);
     if ((twilightAmt > 0.15 || scatter > 0.3) && length(rel) < 3.0 && sunVisibility > 0.001) {
       float ang = atan(rel.y, rel.x);
       float rays = pow(max(cos(ang * 4.0 + 0.2), 0.0), 18.0) + pow(max(cos(ang * 7.0 - 0.5), 0.0), 22.0) * 0.6;
-      rays *= exp(-length(rel) * 1.2) * smoothstep(SKY_HORIZON + 0.08, 0.45, texCoord.y);
+      rays *= exp(-length(rel) * 1.2) * smoothstep(horizonS + 0.04, horizonS + 0.40, S.y);
       mixedCol += CREPUSCULAR_COLOR * rays * clamp(twilightAmt + scatter * 0.5, 0.0, 1.0) * sunVisibility * 0.35;
     }
 
@@ -318,21 +324,21 @@ void main()
 
     // Moon, opposite the sun
     float moonElev = clamp(absZenith - PI * 0.5, 0.0, PI * 0.5);
-    vec2 moonCenter = vec2(0.5 - SUN_HORIZ_AMPLITUDE * sin(zenith), SKY_HORIZON + SUN_VERT_SCALE * sin(moonElev));
+    vec2 moonCenter = vec2(screenAspect * (0.5 - SUN_HORIZ_AMPLITUDE * sin(zenith)), horizonS + SUN_VERT_SCALE * sin(moonElev));
     float moonVisibility = smoothstep(1.55, 1.75, absZenith) * smoothstep(0.0, 0.04, moonElev);
     if (moonVisibility > 0.001)
-      celestialCol += renderMoon(texCoord, moonCenter, fract((month - 1.0) * 30.44 / 29.53)) * moonVisibility;
+      celestialCol += renderMoon(S, moonCenter, fract((month - 1.0) * 30.44 / 29.53)) * moonVisibility;
 
     // Sun disc + glow, tinted by how low it is
     if (sunVisibility > 0.001) {
       float sunEmit;
-      celestialCol += renderSun(texCoord, sunCenter, scatter, sunEmit) * sunVisibility;
+      celestialCol += renderSun(S, sunCenter, scatter, sunEmit) * sunVisibility;
       float setBlend = 1.0 - smoothstep(0.04, 0.24, sunRiseAmount);
       vec3 glowMorning = mix(vec3(0.95, 0.30, 0.10), vec3(0.92, 0.72, 0.38), smoothstep(0.02, 0.14, sunRiseAmount));
       vec3 glowEvening = mix(vec3(0.92, 0.72, 0.38), vec3(0.95, 0.42, 0.12), smoothstep(0.1, 0.85, setBlend));
-      float aboveHorizon = smoothstep(SKY_HORIZON - 0.01, SKY_HORIZON + 0.02, texCoord.y);
-      float skyGlow = length(rel) < 1.0 ? sunGlow(texCoord, sunCenter, 0.22, 0.55) * (0.20 + scatter * 0.42) : 0.0;
-      float wideGlow = exp(-pow(max(texCoord.y - SKY_HORIZON, 0.0) / 0.55, 2.0) * 0.28) * sunProximity * 0.18;
+      float aboveHorizon = smoothstep(horizonS - 0.01, horizonS + 0.02, S.y);
+      float skyGlow = length(rel) < 1.0 ? sunGlow(S, sunCenter, 0.22, 0.55) * (0.20 + scatter * 0.42) : 0.0;
+      float wideGlow = exp(-pow(max(S.y - horizonS, 0.0) / 0.55, 2.0) * 0.28) * sunProximity * 0.18;
       celestialCol += mix(glowEvening, glowMorning, morningW) * (skyGlow + wideGlow) * 0.62 * aboveHorizon * sunVisibility;
     }
 

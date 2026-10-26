@@ -8062,6 +8062,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   var uniformLocation_skyBackgroundDisplayProgram_view = gl.getUniformLocation(skyBackgroundDisplayProgram, 'view');
   var uniformLocation_skyBackgroundDisplayProgram_Xmult = gl.getUniformLocation(skyBackgroundDisplayProgram, 'Xmult');
   var uniformLocation_skyBackgroundDisplayProgram_iterNum = gl.getUniformLocation(skyBackgroundDisplayProgram, 'iterNum');
+  var uniformLocation_skyBackgroundDisplayProgram_screenSize = gl.getUniformLocation(skyBackgroundDisplayProgram, 'screenSize');
   var uniformLocation_realisticDisplayProgram_aspectRatios = gl.getUniformLocation(realisticDisplayProgram, 'aspectRatios');
   var uniformLocation_realisticDisplayProgram_view = gl.getUniformLocation(realisticDisplayProgram, 'view');
   var uniformLocation_realisticDisplayProgram_cursor = gl.getUniformLocation(realisticDisplayProgram, 'cursor');
@@ -8618,6 +8619,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.uniform3f(uniformLocation_skyBackgroundDisplayProgram_view, cam.curXpos, cam.curYpos, cam.curZoom);
       gl.uniform1f(uniformLocation_skyBackgroundDisplayProgram_Xmult, horizontalDisplayMult);
       gl.uniform1f(uniformLocation_skyBackgroundDisplayProgram_iterNum, iterNum);
+      gl.uniform2f(uniformLocation_skyBackgroundDisplayProgram_screenSize, gl.drawingBufferWidth, gl.drawingBufferHeight);
 
       gl.drawBuffers(DRAWBUFFERS_0);
 
