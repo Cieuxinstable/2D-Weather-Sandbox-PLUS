@@ -1,9 +1,12 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="fr" translate="no">
 
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- The UI is French already; automatic page translation re-translates the constantly updating
+         in-game texts (clock, gauges, menus) and makes them flicker. -->
+    <meta name="google" content="notranslate" />
     <title>2D Weather Sandbox</title>
     <script type="text/javascript" src="libraries/dat.gui.min.js"></script>
     <script type="text/javascript" src="libraries/pako.min.js"></script>
@@ -192,8 +195,8 @@
         /* Floating date/hour/city widget for the in-game Sounding Forcing (setupSoundingDateTimeWidget() in app.js) */
         .sounding-datetime-widget {
             position: fixed;
-            right: 8px;
-            bottom: 60px;
+            left: 8px;
+            bottom: 80px;
             z-index: 4;
             background: rgba(14, 20, 34, 0.6);
             backdrop-filter: blur(14px);

@@ -871,10 +871,10 @@ function updateSirenToggleButton()
     return;
 
   if (guiControls.sirenMuted) {
-    sirenToggleEl.innerHTML = '🔇 Siren OFF';
+    sirenToggleEl.innerHTML = '🔇 Sirène coupée';
     sirenToggleEl.style.background = '#552222';
   } else {
-    sirenToggleEl.innerHTML = '🔊 Siren ON';
+    sirenToggleEl.innerHTML = '🔊 Sirène active';
     sirenToggleEl.style.background = '#225522';
   }
 }
@@ -974,7 +974,8 @@ const guiControls_default = {
   activeSoundingStation : 'Munich', // matches createStationSelect()'s own default (id 10868) on the setup screen
   soundingDate : '2025-06-15',      // in-game Sounding Date (YYYY-MM-DD); re-seeded from the setup screen's own date once mainScript() starts -- see setupDatGui()
   soundingHour : 12,                // in-game Sounding Hour (UTC, 0-23)
-  windCeilingAlt : 8000,            // meters. Above this altitude the wind (global wind force + sounding wind) fades smoothly to 0 at the top of the map
+  windCeilingAlt : 8000,
+  skyEffects : true,                // sun disc, moon, stars and sunrise/sunset sky colors in the background            // meters. Above this altitude the wind (global wind force + sounding wind) fades smoothly to 0 at the top of the map
 };
 
 var horizontalDisplayMult = 3.0; // 3.0 to cover srceen while zoomed out
@@ -5063,6 +5064,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   function setupDatGui(strGuiControls)
   {
+    dat.GUI.TEXT_CLOSED = 'Fermer les réglages';
+    dat.GUI.TEXT_OPEN = 'Ouvrir les réglages';
     datGui = new dat.GUI();
     guiControls = JSON.parse(strGuiControls); // load settings object
 
@@ -5101,28 +5104,28 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       }
     };
 
-    var fluidParams_folder = datGui.addFolder('Fluid');
+    var fluidParams_folder = datGui.addFolder('Fluide');
 
     fluidParams_folder.add(guiControls, 'vorticity', 0.0, 0.010, 0.001)
       .onChange(function() {
         gl.useProgram(boundaryProgram);
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'vorticity'), guiControls.vorticity);
       })
-      .name('Vorticity');
+      .name('Vorticité');
 
     fluidParams_folder.add(guiControls, 'dragMultiplier', 0.0, 1.0, 0.01)
       .onChange(function() {
         gl.useProgram(velocityProgram);
         gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'), guiControls.dragMultiplier);
       })
-      .name('Drag');
+      .name('Frottement');
 
     fluidParams_folder.add(guiControls, 'wind', -1.0, 1.0, 0.01)
       .onChange(function() {
         gl.useProgram(velocityProgram);
         gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), guiControls.wind);
       })
-      .name('Wind')
+      .name('Vent')
       .listen(); // stays in sync with the live value while startWindReset() is animating it down
 
     fluidParams_folder.add(guiControls, 'resetWind').name('Réinitialiser les vents');
@@ -5146,14 +5149,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(advectionProgram);
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalDrying'), guiControls.globalDrying);
       })
-      .name('Global Drying');
+      .name('Assèchement global');
 
     fluidParams_folder.add(guiControls, 'globalHeating', -0.001, 0.001, 0.00001)
       .onChange(function() {
         gl.useProgram(advectionProgram);
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalHeating'), guiControls.globalHeating);
       })
-      .name('Global Heating');
+      .name('Réchauffement global');
 
     // , 0, 1.0, 0.01
     fluidParams_folder.add(guiControls, 'soundingForcing', 0, 1.0, 0.01)
@@ -5161,13 +5164,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(advectionProgram);
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'soundingForcing'), guiControls.soundingForcing);
       })
-      .name('Sounding Forcing')
+      .name('Forçage du sondage')
       .listen(); // also set from code: at start when a home-screen sounding is applied, and by loadStationForForcing()
 
     // Right next to the Sounding Forcing slider itself, not just as the separate on-screen marker bar --
     // switching the real Meteociel station driving that forcing is a single click here.
     fluidParams_folder.add(guiControls, 'activeSoundingStation', Object.keys(soundingStations))
-      .name('Sounding Station')
+      .name('Lieu du sondage')
       .onChange(function() { loadStationForForcing(guiControls.activeSoundingStation); })
       .listen(); // stays in sync when a station is instead picked from the on-screen marker bar
 
@@ -5182,7 +5185,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
 
     fluidParams_folder.add(guiControls, 'showStationMarkers')
-      .name('Show Station Markers')
+      .name('Afficher la barre des lieux')
       .onChange(function() {
         const bar = document.getElementById('stationMarkersBar');
         const status = document.getElementById('stationMarkerStatus');
@@ -5207,7 +5210,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalEffectsEndAlt'), guiControls.globalEffectsEndAlt / guiControls.simHeight);
       })
       .listen()
-      .name('Apply below altitude');
+      .name('Appliquer en dessous de (m)');
 
     fluidParams_folder.add(guiControls, 'globalEffectsStartAlt', 0, guiControls.simHeight, 10)
       .onChange(function() {
@@ -5220,81 +5223,81 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalEffectsStartAlt'), guiControls.globalEffectsStartAlt / guiControls.simHeight);
       })
       .listen()
-      .name('Apply above altitude');
+      .name('Appliquer au-dessus de (m)');
 
     fluidParams_folder.add(guiControls, 'CAPE', 0, 4000, 50)
       .listen()
-      .name('CAPE (J/kg, live)')
+      .name('CAPE (J/kg, direct)')
       .domElement.style.pointerEvents = 'none'; // read-only: CAPE is computed from the sounding, not a settable input
 
 
-    var UI_folder = datGui.addFolder('User Interaction');
+    var UI_folder = datGui.addFolder('Outils');
 
     UI_folder
       .add(guiControls, 'tool', {
-        'Flashlight' : 'TOOL_NONE',
-        'Temperature' : 'TOOL_TEMPERATURE',
-        'Water Vapor / Cloud' : 'TOOL_WATER',
-        'Land' : 'TOOL_WALL_LAND',
-        'Lake / Sea' : 'TOOL_WALL_SEA',
-        'Urban' : 'TOOL_WALL_URBAN',
-        'Runway' : 'TOOL_WALL_RUNWAY',
-        'Industrial' : 'TOOL_WALL_INDUSTRIAL',
-        'Fire' : 'TOOL_WALL_FIRE',
-        'Smoke / Dust' : 'TOOL_SMOKE',
-        'Soil Moisture' : 'TOOL_WALL_MOIST',
-        'Vegetation' : 'TOOL_VEGETATION',
-        'Snow' : 'TOOL_WALL_SNOW',
-        'Wind' : 'TOOL_WIND',
-        'Weather Station' : 'TOOL_STATION',
+        'Lampe torche' : 'TOOL_NONE',
+        'Température' : 'TOOL_TEMPERATURE',
+        'Vapeur / nuage' : 'TOOL_WATER',
+        'Terre' : 'TOOL_WALL_LAND',
+        'Lac / mer' : 'TOOL_WALL_SEA',
+        'Ville' : 'TOOL_WALL_URBAN',
+        'Piste' : 'TOOL_WALL_RUNWAY',
+        'Industrie' : 'TOOL_WALL_INDUSTRIAL',
+        'Feu' : 'TOOL_WALL_FIRE',
+        'Fumée / poussière' : 'TOOL_SMOKE',
+        'Humidité du sol' : 'TOOL_WALL_MOIST',
+        'Végétation' : 'TOOL_VEGETATION',
+        'Neige' : 'TOOL_WALL_SNOW',
+        'Vent' : 'TOOL_WIND',
+        'Station météo' : 'TOOL_STATION',
       })
-      .name('Tool')
+      .name('Outil')
       .listen();
-    UI_folder.add(guiControls, 'brushSize', 1, 200, 1).name('Brush Diameter').listen();
-    UI_folder.add(guiControls, 'wholeWidth').name('Whole Width Brush').listen();
-    UI_folder.add(guiControls, 'brushIntensity', 0.005, 0.05, 0.001).name('Brush Intensity');
+    UI_folder.add(guiControls, 'brushSize', 1, 200, 1).name('Diamètre du pinceau').listen();
+    UI_folder.add(guiControls, 'wholeWidth').name('Pinceau pleine largeur').listen();
+    UI_folder.add(guiControls, 'brushIntensity', 0.005, 0.05, 0.001).name('Intensité du pinceau');
     UI_folder.add(guiControls, 'allowCaves')
       .onChange(function() {
         gl.useProgram(boundaryProgram);
         gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'allowCaves'), guiControls.allowCaves ? 1 : 0);
       })
-      .name('Allow Caves');
+      .name('Autoriser les grottes');
 
-    var radiation_folder = datGui.addFolder('Radiation');
+    var radiation_folder = datGui.addFolder('Rayonnement');
 
-    radiation_folder.add(guiControls, 'timeOfDay', 0.0, 23.96, 0.01).onChange(onUpdateTimeOfDaySlider).name('Time of day').listen();
+    radiation_folder.add(guiControls, 'timeOfDay', 0.0, 23.96, 0.01).onChange(onUpdateTimeOfDaySlider).name('Heure').listen();
 
-    radiation_folder.add(guiControls, 'dayNightCycle').name('Day/Night Cycle').listen();
+    radiation_folder.add(guiControls, 'dayNightCycle').name('Cycle jour/nuit').listen();
 
-    radiation_folder.add(guiControls, 'accelerateNight').name('Accelerate Night').listen();
+    radiation_folder.add(guiControls, 'accelerateNight').name('Accélérer la nuit').listen();
 
     radiation_folder.add(guiControls, 'latitude', -90.0, 90.0, 0.1).onChange(function() { updateSunlight(); }).name('Latitude').listen();
 
-    radiation_folder.add(guiControls, 'month', 1.0, 12.99, 0.01).onChange(onUpdateMonthSlider).name('Month').listen();
+    radiation_folder.add(guiControls, 'month', 1.0, 12.99, 0.01).onChange(onUpdateMonthSlider).name('Mois').listen();
 
     radiation_folder.add(guiControls, 'sunAngle', -10.0, 190.0, 0.1)
       .onChange(function() {
         updateSunlight('MANUAL_ANGLE');
         guiControls.dayNightCycle = false;
       })
-      .name('Sun Angle')
+      .name('Angle du soleil')
       .listen();
 
-    radiation_folder.add(guiControls, 'sunIntensity', 0.0, 2.0, 0.01).onChange(function() { updateSunlight('MANUAL_ANGLE'); }).name('Sun Intensity');
+    radiation_folder.add(guiControls, 'sunIntensity', 0.0, 2.0, 0.01).onChange(function() { updateSunlight('MANUAL_ANGLE'); }).name('Intensité du soleil');
 
     radiation_folder.add(guiControls, 'greenhouseGases', 0.0, 0.01, 0.0001)
       .onChange(function() {
         gl.useProgram(lightingProgram);
         gl.uniform1f(gl.getUniformLocation(lightingProgram, 'greenhouseGases'), guiControls.greenhouseGases);
       })
-      .name('Greenhouse Gases');
+      .name('Gaz à effet de serre');
 
     radiation_folder.add(guiControls, 'waterGreenHouseEffect', 0.0, 0.01, 0.0001)
       .onChange(function() {
         gl.useProgram(lightingProgram);
         gl.uniform1f(gl.getUniformLocation(lightingProgram, 'waterGreenHouseEffect'), guiControls.waterGreenHouseEffect);
       })
-      .name('Water Vapor Greenhouse Effect');
+      .name('Effet de serre de la vapeur');
 
     radiation_folder
       .add(guiControls, 'IR_rate', 0.0, 10.0, 0.1)
@@ -5302,9 +5305,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(lightingProgram);
         gl.uniform1f(gl.getUniformLocation(lightingProgram, 'IR_rate'), guiControls.IR_rate);
       })*/
-      .name('IR Multiplier');
+      .name('Multiplicateur IR');
 
-    var water_folder = datGui.addFolder('Water');
+    var water_folder = datGui.addFolder('Eau');
 
     water_folder.add(guiControls, 'waterTemperature', 0.0, 40.0, 0.1)
       .onChange(function() {
@@ -5313,9 +5316,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(lightingProgram);
         gl.uniform1f(gl.getUniformLocation(lightingProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
       })
-      .name('Lake / Sea Temperature (°C)');
+      .name('Température lac / mer (°C)');
 
-    water_folder.add(guiControls, 'dynamicWaterTemperature').name('Dynamic Water Temperature').onChange(function() {
+    water_folder.add(guiControls, 'dynamicWaterTemperature').name('Température de l\'eau dynamique').onChange(function() {
       gl.useProgram(boundaryProgram);
       gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'dynamicWaterTemperature'), guiControls.dynamicWaterTemperature ? 1.0 : 0.0);
     });
@@ -5325,13 +5328,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(boundaryProgram);
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'landEvaporation'), guiControls.landEvaporation);
       })
-      .name('Land Evaporation');
+      .name('Évaporation du sol');
     water_folder.add(guiControls, 'waterEvaporation', 0.0, 0.0004, 0.00001)
       .onChange(function() {
         gl.useProgram(boundaryProgram);
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterEvaporation'), guiControls.waterEvaporation);
       })
-      .name('Lake / Sea Evaporation');
+      .name('Évaporation lac / mer');
     water_folder.add(guiControls, 'evapHeat', 0.0, 5.0, 0.1)
       .onChange(function() {
         gl.useProgram(advectionProgram);
@@ -5341,7 +5344,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(boundaryProgram);
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'evapHeat'), guiControls.evapHeat);
       })
-      .name('Evaporation Heat');
+      .name('Chaleur d\'évaporation');
     water_folder.add(guiControls, 'meltingHeat', 0.0, 5.0, 0.1)
       .onChange(function() {
         gl.useProgram(advectionProgram);
@@ -5349,43 +5352,43 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(precipitationProgram);
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'meltingHeat'), guiControls.meltingHeat);
       })
-      .name('Melting Heat');
+      .name('Chaleur de fusion');
     water_folder.add(guiControls, 'condensationRate', 0.001, 0.020, 0.001)
       .onChange(function() {
         gl.useProgram(advectionProgram);
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'condensationRate'), guiControls.condensationRate);
       })
       .listen()
-      .name('Condensation Rate');
+      .name('Vitesse de condensation');
     water_folder.add(guiControls, 'waterWeight', 0.0, 2.0, 0.01)
       .onChange(function() {
         gl.useProgram(boundaryProgram);
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterWeight'), guiControls.waterWeight);
       })
-      .name('Water Weight');
+      .name('Poids de l\'eau');
 
-    var precipitation_folder = datGui.addFolder('Precipitation');
+    var precipitation_folder = datGui.addFolder('Précipitations');
 
     precipitation_folder.add(guiControls, 'aboveZeroThreshold', 0.1, 2.0, 0.001)
       .onChange(function() {
         gl.useProgram(precipitationProgram);
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'aboveZeroThreshold'), guiControls.aboveZeroThreshold);
       })
-      .name('Precipitation Threshold +°C');
+      .name('Seuil de précipitation > 0 °C');
 
     precipitation_folder.add(guiControls, 'subZeroThreshold', 0.0, 1.0, 0.001)
       .onChange(function() {
         gl.useProgram(precipitationProgram);
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'subZeroThreshold'), guiControls.subZeroThreshold);
       })
-      .name('Precipitation Threshold -°C');
+      .name('Seuil de précipitation < 0 °C');
 
     precipitation_folder.add(guiControls, 'spawnChance', 0.00001, 0.0001, 0.00001)
       .onChange(function() {
         gl.useProgram(precipitationProgram);
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'spawnChanceMult'), guiControls.spawnChance);
       })
-      .name('Spawn Rate')
+      .name('Taux d\'apparition')
       .listen();
 
     precipitation_folder.add(guiControls, 'snowDensity', 0.1, 0.9, 0.01)
@@ -5393,28 +5396,28 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(precipitationProgram);
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'snowDensity'), guiControls.snowDensity);
       })
-      .name('Snow Density');
+      .name('Densité de la neige');
 
     precipitation_folder.add(guiControls, 'fallSpeed', 0.0001, 0.001, 0.0001)
       .onChange(function() {
         gl.useProgram(precipitationProgram);
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'fallSpeed'), guiControls.fallSpeed);
       })
-      .name('Fall Speed');
+      .name('Vitesse de chute');
 
     precipitation_folder.add(guiControls, 'growthRate0C', 0.0001, 0.005, 0.0001)
       .onChange(function() {
         gl.useProgram(precipitationProgram);
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'growthRate0C'), guiControls.growthRate0C);
       })
-      .name('Growth Rate 0°C');
+      .name('Croissance à 0 °C');
 
     precipitation_folder.add(guiControls, 'growthRate_30C', 0.0001, 0.005, 0.0001)
       .onChange(function() {
         gl.useProgram(precipitationProgram);
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'growthRate_30C'), guiControls.growthRate_30C);
       })
-      .name('Growth Rate -30°C');
+      .name('Croissance à -30 °C');
 
     precipitation_folder
       .add(guiControls, 'freezingRate', 0.0005, 0.01, 0.0001) // 0.0035
@@ -5422,7 +5425,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(precipitationProgram);
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'freezingRate'), guiControls.freezingRate);
       })
-      .name('Freezing Rate');
+      .name('Vitesse de congélation');
 
     precipitation_folder
       .add(guiControls, 'meltingRate', 0.0005, 0.01, 0.0001) // 0.0035
@@ -5430,16 +5433,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(precipitationProgram);
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'meltingRate'), guiControls.meltingRate);
       })
-      .name('Melting Rate');
+      .name('Vitesse de fonte');
 
     precipitation_folder.add(guiControls, 'evapRate', 0.0001, 0.005, 0.0001)
       .onChange(function() {
         gl.useProgram(precipitationProgram);
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'evapRate'), guiControls.evapRate);
       })
-      .name('Evaporation Rate');
+      .name('Vitesse d\'évaporation');
 
-    precipitation_folder.add(guiControls, 'inactiveDroplets', 0, NUM_DROPLETS).listen().name('Inactive Droplets');
+    precipitation_folder.add(guiControls, 'inactiveDroplets', 0, NUM_DROPLETS).listen().name('Gouttes inactives');
 
     precipitation_folder.add(guiControls, 'lightningEnabled')
       .onChange(function() {
@@ -5470,45 +5473,45 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Vitesse de fonte (Température au sol)');
 
 
-    var tornado_folder = datGui.addFolder('Tornado Alert');
+    var tornado_folder = datGui.addFolder('Alerte tornade');
 
-    tornado_folder.add(guiControls, 'sirenMuted').name('Mute Siren').listen().onChange(updateSirenToggleButton);
+    tornado_folder.add(guiControls, 'sirenMuted').name('Couper la sirène').listen().onChange(updateSirenToggleButton);
 
-    tornado_folder.add(guiControls, 'showTornadoWarning').name('Show Warning Icon & Path');
+    tornado_folder.add(guiControls, 'showTornadoWarning').name('Icône et trajectoire d\'alerte');
 
 
-    var display_folder = datGui.addFolder('Display');
+    var display_folder = datGui.addFolder('Affichage');
 
     display_folder
       .add(guiControls, 'displayMode', {
-        '1 Temperature -26°C to 30°C' : 'DISP_TEMPERATURE',
-        '2 Water Vapor' : 'DISP_WATER',
-        '3 Realistic' : 'DISP_REAL',
-        '4 Horizontal Velocity' : 'DISP_HORIVEL',
-        '5 Vertical Velocity' : 'DISP_VERTVEL',
-        '6 IR Heating / Cooling' : 'DISP_IRHEATING',
-        '7 IR Down -60°C to 26°C' : 'DISP_IRDOWNTEMP',
-        '8 IR Up -26°C to 30°C' : 'DISP_IRUPTEMP',
-        '9 Precipitation Mass' : 'DISP_PRECIPFEEDBACK_MASS',
-        'Precipitation Heating/Cooling' : 'DISP_PRECIPFEEDBACK_HEAT',
-        'Precipitation Condensation/Evaporation' : 'DISP_PRECIPFEEDBACK_VAPOR',
-        'Rain Deposition' : 'DISP_PRECIPFEEDBACK_RAIN',
-        'Snow Deposition' : 'DISP_PRECIPFEEDBACK_SNOW',
-        'Precipitation/Soil Moisture' : 'DISP_SOIL_MOISTURE',
-        'Curl' : 'DISP_CURL',
-        'Relative Humidity / Cloud Density' : 'DISP_HUMD',
-        'Air Quality' : 'DISP_AIRQUALITY'
+        '1 Température -26 à 30 °C' : 'DISP_TEMPERATURE',
+        '2 Vapeur d\'eau' : 'DISP_WATER',
+        '3 Réaliste' : 'DISP_REAL',
+        '4 Vent horizontal' : 'DISP_HORIVEL',
+        '5 Vent vertical' : 'DISP_VERTVEL',
+        '6 Chauffage / refroidissement IR' : 'DISP_IRHEATING',
+        '7 IR descendant -60 à 26 °C' : 'DISP_IRDOWNTEMP',
+        '8 IR montant -26 à 30 °C' : 'DISP_IRUPTEMP',
+        '9 Masse de précipitations' : 'DISP_PRECIPFEEDBACK_MASS',
+        'Précipitations : chauffage/refroidissement' : 'DISP_PRECIPFEEDBACK_HEAT',
+        'Précipitations : condensation/évaporation' : 'DISP_PRECIPFEEDBACK_VAPOR',
+        'Cumul de pluie' : 'DISP_PRECIPFEEDBACK_RAIN',
+        'Cumul de neige' : 'DISP_PRECIPFEEDBACK_SNOW',
+        'Précipitations / humidité du sol' : 'DISP_SOIL_MOISTURE',
+        'Rotationnel' : 'DISP_CURL',
+        'Humidité relative / densité des nuages' : 'DISP_HUMD',
+        'Qualité de l\'air' : 'DISP_AIRQUALITY'
       })
-      .name('Display Mode')
+      .name('Mode d\'affichage')
       .listen();
     display_folder.add(guiControls, 'exposure', 0.5, 5.0, 0.01)
       .onChange(function() {
         gl.useProgram(postProcessingProgram);
         gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), guiControls.exposure);
       })
-      .name('Exposure');
+      .name('Exposition');
 
-    display_folder.add(guiControls, 'camSpeed', 0.001, 0.050, 0.001).name('Camera Pan Speed');
+    display_folder.add(guiControls, 'camSpeed', 0.001, 0.050, 0.001).name('Vitesse de la caméra');
 
 
     display_folder.add(guiControls, 'wrapHorizontally')
@@ -5520,23 +5523,30 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         else
           horizontalDisplayMult = 1.0;
       })
-      .name('Wrap Horizontally');
+      .name('Boucler horizontalement');
 
-    display_folder.add(guiControls, 'SmoothCam').onChange(function() { cam.smooth = guiControls.SmoothCam; }).name('Smooth Camera');
+    display_folder.add(guiControls, 'SmoothCam').onChange(function() { cam.smooth = guiControls.SmoothCam; }).name('Caméra fluide');
 
-    display_folder.add(guiControls, 'showGraph').onChange(hideOrShowGraph).name('Show Sounding Graph').listen();
-    display_folder.add(guiControls, 'showDrops').name('Show Droplets').listen();
-    display_folder.add(guiControls, 'realDewPoint').name('Show Real Dew Point');
+    display_folder.add(guiControls, 'showGraph').onChange(hideOrShowGraph).name('Afficher le sondage').listen();
+
+    display_folder.add(guiControls, 'skyEffects')
+      .onChange(function() {
+        gl.useProgram(skyBackgroundDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyEffects'), guiControls.skyEffects ? 1.0 : 0.0);
+      })
+      .name('Ciel réaliste (soleil, lune, étoiles)');
+    display_folder.add(guiControls, 'showDrops').name('Afficher les gouttes').listen();
+    display_folder.add(guiControls, 'realDewPoint').name('Point de rosée réel');
 
 
-    display_folder.add(guiControls, 'twelveHourClock').name('12-hour clock');
+    display_folder.add(guiControls, 'twelveHourClock').name('Horloge 12 h');
 
     display_folder
       .add(guiControls, 'lengthUnit', {
-        'km / meters / cm / mm' : 'LENGTH_UNIT_METRIC',
-        'miles / ft / inch' : 'LENGTH_UNIT_IMPERIAL',
+        'km / m / cm / mm' : 'LENGTH_UNIT_METRIC',
+        'miles / pieds / pouces' : 'LENGTH_UNIT_IMPERIAL',
       })
-      .name('Length Unit')
+      .name('Unité de longueur')
       .onChange(function() {
         for (i = 0; i < weatherStations.length; i++) {
           weatherStations[i].clearChart();
@@ -5550,7 +5560,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'mph' : 'SPEED_UNIT_MPH',
         'kt' : 'SPEED_UNIT_KT',
       })
-      .name('Speed Unit')
+      .name('Unité de vitesse')
       .onChange(function() {
         for (i = 0; i < weatherStations.length; i++) {
           weatherStations[i].clearChart();
@@ -5563,7 +5573,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         '°F' : 'TEMP_UNIT_F',
         'K' : 'TEMP_UNIT_K',
       })
-      .name('Temperature Unit')
+      .name('Unité de température')
       .onChange(function() {
         for (i = 0; i < weatherStations.length; i++) {
           weatherStations[i].clearChart();
@@ -5571,7 +5581,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       });
 
 
-    var advanced_folder = datGui.addFolder('Advanced');
+    var advanced_folder = datGui.addFolder('Avancé');
 
     advanced_folder.add(guiControls, 'enablePrecipitation')
       .onChange(function() {
@@ -5579,14 +5589,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         setupPrecipitationBuffers();
         guiControls.inactiveDroplets = NUM_DROPLETS;
       })
-      .name('Enable Precipitation');
+      .name('Activer les précipitations');
 
-    advanced_folder.add(guiControls, 'IterPerFrame', 1, 50, 1).onChange(function() { guiControls.auto_IterPerFrame = false; }).name('Iterations / Frame').listen();
+    advanced_folder.add(guiControls, 'IterPerFrame', 1, 50, 1).onChange(function() { guiControls.auto_IterPerFrame = false; }).name('Itérations / image').listen();
 
-    advanced_folder.add(guiControls, 'auto_IterPerFrame').name('Auto Adjust').listen();
+    advanced_folder.add(guiControls, 'auto_IterPerFrame').name('Ajustement auto').listen();
 
 
-    advanced_folder.add(guiControls, 'sound').name('Enable Sound').onChange(function() {
+    advanced_folder.add(guiControls, 'sound').name('Activer le son').onChange(function() {
       if (guiControls.sound) {
         if (soundSystem == null) {
           soundSystem = new SoundSystem();
@@ -5598,12 +5608,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     advanced_folder.add(guiControls, 'STP', 0, 10, 0.1)
       .listen()
-      .name('STP (live)')
+      .name('STP (direct)')
       .domElement.style.pointerEvents = 'none'; // read-only: STP is derived from CAPE/CIN/shear, not a settable input
 
     advanced_folder.add(guiControls, 'gridResY', 100, 600, 10)
       .listen()
-      .name('Grid Height (restart)')
+      .name('Hauteur de grille (redémarre)')
       .onFinishChange(function() {
         if (guiControls.gridResY == sim_res_y)
           return;
@@ -5616,10 +5626,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
       });
 
-    advanced_folder.add(guiControls, 'resetSettings').name('Reset all settings');
+    advanced_folder.add(guiControls, 'resetSettings').name('Réinitialiser tous les réglages');
 
-    datGui.add(guiControls, 'paused').onChange(handlePause).name('Paused').listen();
-    datGui.add(guiControls, 'download').name('Save Simulation to File');
+    datGui.add(guiControls, 'paused').onChange(handlePause).name('Pause').listen();
+    datGui.add(guiControls, 'download').name('Sauvegarder la simulation');
 
     datGui.width = 400;
   }
@@ -6188,7 +6198,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     c.fillStyle = '#FF3C00';
     c.font = 'bold 14px Arial';
     c.textAlign = 'center';
-    c.fillText('TORNADO WARNING', x, y - 85);
+    c.fillText('ALERTE TORNADE', x, y - 85);
   }
 
   var soundingGraph = {
@@ -8928,10 +8938,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     if (guiControls.twelveHourClock) { // 12 hour clock for Americans
       timeStr = simDateTime.toLocaleString('en-US', {hour12 : true, hour : 'numeric', minute : 'numeric'});
     } else {                           // 24 hour clock
-      timeStr = simDateTime.toLocaleString('nl-NL', {hour12 : false, hour : 'numeric', minute : 'numeric'});
+      timeStr = simDateTime.toLocaleString('fr-FR', {hour12 : false, hour : 'numeric', minute : 'numeric'});
     }
 
-    const monthStr = simDateTime.toLocaleString('en-us', {month : 'short', day : 'numeric'});
+    const monthStr = simDateTime.toLocaleString('fr-FR', {month : 'short', day : 'numeric'});
     return timeStr + '&nbsp; ' + monthStr;
   }
 
@@ -9007,6 +9017,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'minShadowLight'), minShadowLight);
     gl.useProgram(skyBackgroundDisplayProgram);
     gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight'), minShadowLight);
+    gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'sunAngle'), solarZenithAngle);
+    gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'month'), guiControls.month);
+    gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyEffects'), guiControls.skyEffects ? 1.0 : 0.0);
 
     if (guiControls.dayNightCycle)
       clockEl.innerHTML = dateTimeStr(); // update clock
