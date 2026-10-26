@@ -374,6 +374,8 @@ function formatSoundingTime(timeStamp)
   return d.toLocaleDateString('fr-FR', {day : '2-digit', month : 'long', year : 'numeric', timeZone : 'UTC'}) + ' · ' + String(d.getUTCHours()).padStart(2, '0') + ' UTC';
 }
 
+const SIM_VEL_TARGET_MAX = 0.30; // cells/iteration, = VEL_SOFT in shaders/common.glsl
+
 function sampleIsInvalid(s) { return isNaN(s.t) || isNaN(s.td) || isNaN(s.vel); }
 
 // Wind is projected onto the sim's single horizontal axis per sample (u = vel * cos(angle)) BEFORE
@@ -407,7 +409,9 @@ function rawSoundingToSimSounding(soundingData, simHeight, inSimSoundingRes)
       twoDimentionalVel = uOf(sampleBelow) * (1 - a) + uOf(sampleAboveOrEqual) * a;
     }
 
-    const inSimVel = msToRawVelocity(twoDimentionalVel / 3.6);      // convert to m/s first
+    // Clamped to what the sim can carry stably (VEL_SOFT in common.glsl): a jet stream faster than that would
+    // only make the forcing fight the velocity limiter.
+    const inSimVel = clamp(msToRawVelocity(twoDimentionalVel / 3.6), -SIM_VEL_TARGET_MAX, SIM_VEL_TARGET_MAX); // convert to m/s first
 
     soundingForSim[y] = {'t' : s.t, 'td' : s.td, 'vel' : inSimVel}; // Put the requered data in an array of objects
   }
