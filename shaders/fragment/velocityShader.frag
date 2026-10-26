@@ -15,6 +15,7 @@ uniform float dragMultiplier;
 
 uniform float wind;
 uniform float uWindMultiplier; // 1.0 = normal; ramped 1.0 -> 0.0 over 5s by startWindReset() in app.js to cut the global wind force off smoothly, applied here before this frame's pressure projection (pressureProgram, later in the same iteration) rather than touching the velocity field directly
+uniform float velMax;         // flow speed limit in cells/iteration, from the "Limite de vent" setting (app.js)
 uniform float windTaperStart;  // normalized altitude (0 = ground, 1 = top) above which the wind force fades smoothly to 0 at the top of the map
 
 uniform vec2 texelSize;
@@ -71,8 +72,7 @@ void main()
 
     // Soft speed limiter. Velocities are in cells/iteration and the sim's pressure waves travel 1 cell/iteration,
     // so the explicit pressure step becomes unstable when the flow gets close to that: strong jet-stream winds
-    // then blow up into a saturated, speckled band. Below VEL_SOFT nothing changes; above it the excess is eased
-    // with tanh so the speed never exceeds VEL_MAX, with no hard kink.
-    base.xy = softLimitVelocity(base.xy);
+    // then blow up into a saturated, speckled band. The limit is user-adjustable (it depends on the cell size).
+    base.xy = softLimitVelocity(base.xy, velMax);
   }
 }
