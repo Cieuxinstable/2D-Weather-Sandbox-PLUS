@@ -1,8 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 
 <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>2D Weather Sandbox</title>
     <script type="text/javascript" src="libraries/dat.gui.min.js"></script>
     <script type="text/javascript" src="libraries/pako.min.js"></script>
@@ -10,159 +11,51 @@
     <script type="text/javascript" src="libraries/chartjs-adapter-date-fns.js"></script>
     <script type="text/javascript" src="app.js"></script>
     <link rel="shortcut icon" type="image/x-icon" href="favicon.ico">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --text-color: #ffffff;
-            --accent-color: #4a90e2;
-            --hover-color: #007bff;
-            --border-radius: 12px;
-            --transition-speed: 0.3s;
-            --shadow: 0 4px 6px rgba(15, 5, 5, 0.1);
-            --soft-gradient: linear-gradient(135deg, rgba(74, 144, 226, 0.1), rgba(0, 123, 255, 0.1));
+            --text-muted: rgba(226, 236, 255, 0.72);
+            --text-faint: rgba(226, 236, 255, 0.5);
+            --accent-color: #5aa9ff;
+            --accent-strong: #2f80ed;
+            --accent-glow: rgba(90, 169, 255, 0.45);
+            --storm: #ffcc4d;
+            --danger: #ff6b6b;
+            --ok: #6bdc7c;
+            --surface: rgba(16, 26, 46, 0.55);
+            --surface-strong: rgba(16, 26, 46, 0.78);
+            --surface-hover: rgba(40, 60, 96, 0.6);
+            --border: rgba(255, 255, 255, 0.12);
+            --border-strong: rgba(255, 255, 255, 0.24);
+            --border-radius: 16px;
+            --transition-speed: 0.25s;
+            --shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+            --font-body: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+            --font-display: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
         }
 
         body {
             margin: 0;
-            font-family: 'Arial', sans-serif;
-            background: url('resources/img/background.png') bottom left no-repeat;
-            background-size: cover;
-            background-attachment: fixed;
+            font-family: var(--font-body);
+            background: #060d1a;
             color: var(--text-color);
             line-height: 1.6;
             overflow-x: hidden;
         }
 
-
-        .main-nav {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 0rem 2rem 0rem 2rem;
-            background: rgba(0, 0, 0, 0.13);
-            backdrop-filter: blur(10px);
-            z-index: 0;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
-        }
-
-        .nav-title h1 {
-            margin: 0;
-            font-size: 2.0rem;
-            color: var(--text-color);
-            font-weight: 600;
-            letter-spacing: 0.5px;
-        }
-
-        .nav-icons {
-            display: flex;
-            padding-top: 1rem;
-            gap: 1.5rem;
-            align-items: center;
-        }
-
-        .nav-icons img {
-            height: 50px;
-            width: auto;
-            transition: all 0.3s ease;
-            opacity: 0.9;
-        }
-
-        .nav-icons a:hover img {
-            transform: scale(1.1);
-            opacity: 1;
-        }
-
-        .resolution-warning {
-            margin-top: 4rem;
-            max-width: 1200px;
-            padding: 1rem 2rem;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: var(--border-radius);
-
-        }
-
-        .resolution-warning p {
-            margin: 0;
-            font-size: 1.1rem;
-            color: rgba(255, 255, 255, 0.9);
-            line-height: 1.5;
-        }
-
-        #IntroScreen {
-            padding: 20px;
-            max-width: 1200px;
-            margin: 20px;
-            border-radius: var(--border-radius);
-            animation: fadeIn 1s ease-in-out;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-        }
-
-        table td {
-            padding: 10px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        input[type="range"] {
-            width: 100%;
-            max-width: 800px;
-            margin: 10px 0;
-            height: 8px;
-        }
-
-        input[type="button"] {
-            background: #007bff;
-            border: none;
-            padding: 12px 24px;
-            color: var(--text-color);
-            border-radius: var(--border-radius);
-            cursor: pointer;
-            font-size: 1rem;
-            transition: transform var(--transition-speed) ease, box-shadow var(--transition-speed) ease;
-            box-shadow: var(--shadow);
-        }
-
-        input[type="button"]:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.2);
-            background-color: #004a9a;
-            transition: var(--transition-speed);
-        }
-
-        #help {
-            margin: 20px 0;
-            padding: 20px;
-            background: var(--soft-gradient);
-            border-radius: var(--border-radius);
-            box-shadow: var(--shadow);
-            animation: fadeIn 1s ease-in-out;
-        }
-
-        .tips,
-        .controls,
-        .example-files,
-        .support {
-            max-width: 1200px;
-            margin: 20px auto;
-            padding: 1.5rem 2rem;
-            background: rgba(255, 255, 255, 0.08);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(255, 255, 255, 0.18);
-            border-radius: var(--border-radius);
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
-            scroll-margin-top: 5.5rem;
-        }
-
-        .support {
-            text-align: center;
+        a {
+            color: var(--accent-color);
         }
 
         #mainCanvas {
@@ -178,6 +71,40 @@
             z-index: 1;
             display: none;
         }
+
+        .icon {
+            width: 1.1em;
+            height: 1.1em;
+            flex: none;
+            display: inline-block;
+            vertical-align: -0.18em;
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+
+        .sounding-status .icon,
+        .station-marker-status .icon {
+            margin-right: 0.4em;
+        }
+
+        .sounding-status.loading .icon,
+        .station-marker-status[data-kind="loading"] .icon {
+            animation: spin 0.9s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .station-markers-bar button .icon {
+            margin-right: 0.35em;
+            opacity: 0.85;
+        }
+
+        /* ===================== In-game widgets (outlive #IntroScreen) ===================== */
 
         .autopilotNumberInput {
             background-color: #0000ff;
@@ -203,7 +130,6 @@
             letter-spacing: 1px;
             display: flex;
             justify-content: center;
-            align-items: center;
             cursor: pointer;
             align-items: flex-end;
         }
@@ -263,138 +189,13 @@
             text-anchor: middle
         }
 
-        /* ===================== Home screen redesign ===================== */
-
-        html {
-            scroll-behavior: smooth;
-        }
-
-        #IntroScreen {
-            position: relative;
-        }
-
-        /* Decorative animated sky, scoped to #IntroScreen so it disappears along with it (see
-           setLoadingBar() in app.js, which removes #IntroScreen wholesale once the sim starts). */
-        .sky-bg {
-            position: fixed;
-            inset: 0;
-            z-index: -1;
-            overflow: hidden;
-            pointer-events: none;
-            background: linear-gradient(180deg, #0b1c33 0%, #1c3d63 32%, #3f6f9e 62%, #7fa8c9 100%);
-        }
-
-        .sky-bg::after {
-            content: '';
-            position: absolute;
-            inset: -20%;
-            background: radial-gradient(60% 40% at 30% 20%, rgba(255, 255, 255, 0.10), transparent 60%),
-                radial-gradient(50% 35% at 80% 10%, rgba(255, 255, 255, 0.07), transparent 60%);
-            animation: driftSheen 40s ease-in-out infinite alternate;
-        }
-
-        @keyframes driftSheen {
-            from {
-                transform: translate(-5%, 0);
-            }
-
-            to {
-                transform: translate(5%, 2%);
-            }
-        }
-
-        .sky-bg .cloud {
-            position: absolute;
-            background: rgba(255, 255, 255, 0.55);
-            border-radius: 50%;
-            filter: blur(6px);
-            opacity: 0.35;
-            animation-name: driftCloud;
-            animation-timing-function: linear;
-            animation-iteration-count: infinite;
-        }
-
-        @keyframes driftCloud {
-            from {
-                transform: translateX(-25vw);
-            }
-
-            to {
-                transform: translateX(125vw);
-            }
-        }
-
-        .sky-bg .rain-line {
-            position: absolute;
-            top: -10vh;
-            width: 1px;
-            height: 60px;
-            background: linear-gradient(rgba(200, 220, 255, 0), rgba(200, 220, 255, 0.35));
-            animation-name: fallRain;
-            animation-timing-function: linear;
-            animation-iteration-count: infinite;
-        }
-
-        @keyframes fallRain {
-            from {
-                transform: translateY(0);
-                opacity: 0;
-            }
-
-            10% {
-                opacity: 1;
-            }
-
-            90% {
-                opacity: 0.5;
-            }
-
-            to {
-                transform: translateY(120vh);
-                opacity: 0;
-            }
-        }
-
-        .hero {
-            padding: 6rem 2rem 2rem 2rem;
-            text-align: center;
-        }
-
-        .hero-title {
-            margin: 0;
-            font-size: 3rem;
-            font-weight: 700;
-            letter-spacing: 0.5px;
-            text-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-        }
-
-        .hero-subtitle {
-            margin: 0.75rem auto 0 auto;
-            max-width: 640px;
-            font-size: 1.15rem;
-            color: rgba(255, 255, 255, 0.85);
-        }
-
-        .glass-card {
-            background: rgba(255, 255, 255, 0.08);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(255, 255, 255, 0.18);
-            border-radius: var(--border-radius);
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
-        }
-
-        .glass-card-title {
-            margin: 0 0 1rem 0;
-            font-size: 1.2rem;
-            font-weight: 600;
-        }
-
-        /* In-game floating date/hour widget for the Sounding Forcing (see setupSoundingDateTimeWidget()
-           in app.js) -- same glassmorphism language as .glass-card above, but positioned over the running
-           simulation rather than the setup screen. */
+        /* Floating date/hour/city widget for the in-game Sounding Forcing (setupSoundingDateTimeWidget() in app.js) */
         .sounding-datetime-widget {
-            background: rgba(20, 24, 34, 0.45);
+            position: fixed;
+            right: 8px;
+            bottom: 60px;
+            z-index: 4;
+            background: rgba(14, 20, 34, 0.6);
             backdrop-filter: blur(14px);
             -webkit-backdrop-filter: blur(14px);
             border: 1px solid rgba(255, 255, 255, 0.18);
@@ -404,19 +205,28 @@
             display: flex;
             align-items: center;
             gap: 6px;
-            font-family: Monospace;
+            font-family: var(--font-body);
             color: white;
         }
 
-        .sounding-datetime-widget input[type="date"] {
+        .sounding-datetime-widget input {
             background: rgba(255, 255, 255, 0.1);
             border: 1px solid rgba(255, 255, 255, 0.25);
             border-radius: 8px;
             color: white;
-            font-family: Monospace;
+            font-family: inherit;
             font-size: 12px;
-            padding: 4px 6px;
+            padding: 5px 8px;
             color-scheme: dark;
+        }
+
+        .sounding-datetime-widget .widget-city-input {
+            width: 130px;
+        }
+
+        .sounding-datetime-widget input:focus {
+            outline: none;
+            border-color: var(--accent-color);
         }
 
         .sounding-datetime-widget button.hour-btn {
@@ -424,9 +234,9 @@
             border: 1px solid rgba(255, 255, 255, 0.25);
             border-radius: 8px;
             color: white;
-            font-family: Monospace;
+            font-family: inherit;
             font-size: 12px;
-            padding: 4px 10px;
+            padding: 5px 9px;
             cursor: pointer;
             transition: background 0.15s ease, border-color 0.15s ease;
         }
@@ -440,94 +250,582 @@
             border-color: rgba(120, 190, 255, 0.7);
         }
 
-        .action-cards {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 1.25rem;
-            max-width: 1200px;
-            margin: 2rem auto;
-            padding: 0 2rem;
+        .station-markers-bar {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 4;
+            max-height: 46px;
+            overflow-x: auto;
+            white-space: nowrap;
+            padding: 6px 8px;
+            background: rgba(6, 12, 24, 0.6);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            font-family: var(--font-body);
+            scrollbar-width: thin;
         }
 
-        .action-card {
-            display: block;
-            padding: 1.5rem;
-            text-decoration: none;
-            color: var(--text-color);
-            transition: transform var(--transition-speed) ease, background var(--transition-speed) ease;
+        .station-markers-bar button {
+            margin-right: 4px;
+            padding: 4px 10px;
+            font-family: inherit;
+            font-size: 12px;
+            color: white;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 999px;
+            cursor: pointer;
+            transition: background 0.15s ease;
         }
 
-        .action-card:hover {
-            transform: translateY(-4px);
-            background: rgba(255, 255, 255, 0.14);
+        .station-markers-bar button:hover {
+            background: rgba(255, 255, 255, 0.18);
         }
 
-        .action-card-icon {
-            font-size: 2rem;
-            margin-bottom: 0.5rem;
+        .station-markers-bar button.active {
+            background: rgba(80, 160, 255, 0.55);
+            border-color: rgba(120, 190, 255, 0.7);
         }
 
-        .action-card h3 {
-            margin: 0 0 0.4rem 0;
+        .station-marker-status {
+            position: fixed;
+            left: 8px;
+            bottom: 52px;
+            z-index: 4;
+            font-family: var(--font-body);
+            font-size: 13px;
+            color: white;
+            text-shadow: 1px 1px 2px black;
+        }
+
+        .station-marker-status[data-kind="error"] {
+            color: #ff9b9b;
+        }
+
+        .station-marker-status[data-kind="success"] {
+            color: #9ff0aa;
+        }
+
+        /* ===================== Home screen ===================== */
+
+        #IntroScreen {
+            position: relative;
+            min-height: 100vh;
+        }
+
+        /* Decorative animated sky, scoped to #IntroScreen so it disappears along with it (setLoadingBar() in
+           app.js removes #IntroScreen wholesale once the sim starts). */
+        .sky-bg {
+            position: fixed;
+            inset: 0;
+            z-index: -1;
+            overflow: hidden;
+            pointer-events: none;
+            background:
+                radial-gradient(120% 70% at 50% 110%, rgba(255, 170, 90, 0.18), transparent 60%),
+                linear-gradient(180deg, #050b18 0%, #0c1d38 35%, #1d3c66 70%, #3a5f8c 100%);
+        }
+
+        .sky-bg::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: url('resources/img/background.png') bottom center / cover no-repeat;
+            opacity: 0.35;
+            mix-blend-mode: screen;
+        }
+
+        .sky-bg .flash {
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(60% 50% at 70% 25%, rgba(200, 220, 255, 0.55), transparent 70%);
+            opacity: 0;
+            animation: lightning 11s infinite;
+        }
+
+        @keyframes lightning {
+            0%, 86%, 89%, 92%, 100% { opacity: 0; }
+            87% { opacity: 0.9; }
+            88% { opacity: 0.15; }
+            90% { opacity: 0.7; }
+            91% { opacity: 0.05; }
+        }
+
+        .sky-bg .cloud {
+            position: absolute;
+            background: rgba(220, 230, 255, 0.55);
+            border-radius: 50%;
+            filter: blur(14px);
+            opacity: 0.25;
+            animation: driftCloud linear infinite;
+        }
+
+        @keyframes driftCloud {
+            from { transform: translateX(-30vw); }
+            to { transform: translateX(130vw); }
+        }
+
+        .sky-bg .rain-line {
+            position: absolute;
+            top: -10vh;
+            width: 1px;
+            height: 70px;
+            background: linear-gradient(rgba(200, 220, 255, 0), rgba(200, 220, 255, 0.35));
+            animation: fallRain linear infinite;
+        }
+
+        @keyframes fallRain {
+            from { transform: translate(0, 0); opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 0.5; }
+            to { transform: translate(-6vh, 120vh); opacity: 0; }
+        }
+
+        .main-nav {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.6rem clamp(1rem, 4vw, 2.5rem);
+            background: rgba(6, 12, 24, 0.55);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            font-family: var(--font-display);
+            font-weight: 700;
             font-size: 1.1rem;
+            letter-spacing: 0.3px;
+            color: var(--text-color);
+            text-decoration: none;
         }
 
-        .action-card p {
-            margin: 0;
+        .nav-brand .logo {
+            width: 30px;
+            height: 30px;
+            display: grid;
+            place-items: center;
+            border-radius: 9px;
+            background: linear-gradient(135deg, var(--accent-color), #7c5cff);
+            box-shadow: 0 0 18px var(--accent-glow);
+            color: #fff;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 0.25rem;
+        }
+
+        .nav-links a {
+            color: var(--text-muted);
+            text-decoration: none;
             font-size: 0.9rem;
-            color: rgba(255, 255, 255, 0.75);
+            padding: 0.35rem 0.75rem;
+            border-radius: 999px;
+            transition: color var(--transition-speed), background var(--transition-speed);
         }
 
-        .quick-nav {
+        .nav-links a:hover {
+            color: var(--text-color);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .nav-icons {
+            display: flex;
+            gap: 0.9rem;
+            align-items: center;
+        }
+
+        .nav-icons img {
+            height: 26px;
+            width: auto;
+            opacity: 0.75;
+            transition: transform var(--transition-speed), opacity var(--transition-speed);
+        }
+
+        .nav-icons a:hover img {
+            transform: translateY(-2px) scale(1.08);
+            opacity: 1;
+        }
+
+        @media (max-width: 860px) {
+            .nav-links {
+                display: none;
+            }
+        }
+
+        /* ---------- Hero ---------- */
+
+        .hero {
+            min-height: calc(100vh - 56px);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 3rem clamp(1rem, 5vw, 3rem) 5rem;
+        }
+
+        .hero-kicker {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.35rem 0.9rem;
+            border-radius: 999px;
+            border: 1px solid var(--border-strong);
+            background: rgba(255, 255, 255, 0.06);
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            opacity: 0;
+            animation: fadeUp 0.8s 0.1s ease forwards;
+        }
+
+        .hero-kicker .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--ok);
+            box-shadow: 0 0 10px var(--ok);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.5); opacity: 0.5; }
+        }
+
+        .hero-title {
+            margin: 1.2rem 0 0 0;
+            font-family: var(--font-display);
+            font-size: clamp(2.6rem, 8vw, 5.6rem);
+            font-weight: 700;
+            line-height: 1.02;
+            letter-spacing: -1.5px;
+        }
+
+        /* Each letter is wrapped in a span by the inline script below and rises in, staggered. */
+        .hero-title .char {
+            display: inline-block;
+            opacity: 0;
+            transform: translateY(0.45em) rotate(4deg);
+            filter: blur(8px);
+            animation: charIn 0.7s cubic-bezier(.2, .8, .2, 1) forwards;
+        }
+
+        .hero-title .word-accent .char {
+            background: linear-gradient(100deg, #8fd0ff 0%, #ffffff 40%, #ffd36b 60%, #8fd0ff 100%);
+            background-size: 250% 100%;
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            animation: charIn 0.7s cubic-bezier(.2, .8, .2, 1) forwards, shimmer 6s 1.6s linear infinite;
+        }
+
+        @keyframes charIn {
+            to { opacity: 1; transform: none; filter: none; }
+        }
+
+        @keyframes shimmer {
+            from { background-position: 100% 0; }
+            to { background-position: -150% 0; }
+        }
+
+        .hero-typed {
+            margin: 1.4rem auto 0 auto;
+            min-height: 1.8em;
+            font-size: clamp(1.1rem, 2.6vw, 1.6rem);
+            font-weight: 500;
+            color: var(--text-muted);
+            opacity: 0;
+            animation: fadeUp 0.8s 1.1s ease forwards;
+        }
+
+        .hero-typed .typed-word {
+            color: var(--storm);
+            font-weight: 600;
+        }
+
+        .hero-typed .caret {
+            display: inline-block;
+            width: 2px;
+            height: 1.1em;
+            margin-left: 3px;
+            vertical-align: -0.15em;
+            background: var(--storm);
+            animation: blink 1s steps(1) infinite;
+        }
+
+        @keyframes blink {
+            50% { opacity: 0; }
+        }
+
+        .hero-subtitle {
+            margin: 1rem auto 0 auto;
+            max-width: 640px;
+            font-size: 1.05rem;
+            color: var(--text-faint);
+            opacity: 0;
+            animation: fadeUp 0.8s 1.3s ease forwards;
+        }
+
+        .hero-actions {
             display: flex;
             flex-wrap: wrap;
             justify-content: center;
-            gap: 1rem;
-            max-width: 1200px;
-            margin: 0 auto 2rem auto;
-            padding: 0.75rem 1.5rem;
+            gap: 0.9rem;
+            margin-top: 2.2rem;
+            opacity: 0;
+            animation: fadeUp 0.8s 1.5s ease forwards;
         }
 
-        .quick-nav a {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 1rem;
-            border-radius: 999px;
-            color: var(--text-color);
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(14px); }
+            to { opacity: 1; transform: none; }
+        }
+
+        .scroll-hint {
+            margin-top: 3.5rem;
+            color: var(--text-faint);
+            font-size: 0.8rem;
+            letter-spacing: 2px;
+            text-transform: uppercase;
             text-decoration: none;
+            opacity: 0;
+            animation: fadeUp 0.8s 2s ease forwards;
+        }
+
+        .scroll-hint span {
+            display: block;
+            margin: 0.4rem auto 0;
+            width: 22px;
+            height: 34px;
+            border: 2px solid var(--border-strong);
+            border-radius: 12px;
+            position: relative;
+        }
+
+        .scroll-hint span::after {
+            content: '';
+            position: absolute;
+            left: 50%;
+            top: 6px;
+            width: 4px;
+            height: 7px;
+            margin-left: -2px;
+            border-radius: 2px;
+            background: var(--text-muted);
+            animation: scrollDot 1.6s infinite;
+        }
+
+        @keyframes scrollDot {
+            0% { transform: translateY(0); opacity: 1; }
+            80% { transform: translateY(12px); opacity: 0; }
+            100% { opacity: 0; }
+        }
+
+        /* ---------- Buttons ---------- */
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 0.85rem 1.6rem;
+            border-radius: 999px;
+            border: 1px solid var(--border-strong);
             background: rgba(255, 255, 255, 0.06);
-            border: 1px solid rgba(255, 255, 255, 0.14);
-            transition: background var(--transition-speed) ease;
-            font-size: 0.95rem;
+            color: var(--text-color);
+            font-family: inherit;
+            font-size: 1rem;
+            font-weight: 600;
+            text-decoration: none;
+            cursor: pointer;
+            transition: transform var(--transition-speed), box-shadow var(--transition-speed), background var(--transition-speed);
         }
 
-        .quick-nav a:hover {
-            background: rgba(255, 255, 255, 0.16);
+        .btn:hover {
+            transform: translateY(-2px);
+            background: rgba(255, 255, 255, 0.12);
         }
 
-        .setup-section {
+        .btn-primary {
+            border-color: transparent;
+            background: linear-gradient(135deg, var(--accent-color), var(--accent-strong));
+            box-shadow: 0 8px 28px var(--accent-glow);
+        }
+
+        .btn-primary:hover {
+            background: linear-gradient(135deg, #73b8ff, #3b8cf5);
+            box-shadow: 0 12px 34px var(--accent-glow);
+        }
+
+        .btn-large {
+            padding: 1rem 2.2rem;
+            font-size: 1.1rem;
+        }
+
+        .chip {
+            padding: 0.4rem 0.85rem;
+            border-radius: 999px;
+            border: 1px solid var(--border-strong);
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-color);
+            font-family: inherit;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: background var(--transition-speed);
+        }
+
+        .chip:hover {
+            background: rgba(255, 255, 255, 0.14);
+        }
+
+        /* ---------- Sections ---------- */
+
+        .section {
             max-width: 1200px;
-            margin: 0 auto 2rem auto;
-            padding: 1.5rem 2rem;
-            scroll-margin-top: 5.5rem;
+            margin: 0 auto 4rem auto;
+            padding: 0 clamp(1rem, 4vw, 2rem);
+            scroll-margin-top: 4.5rem;
+        }
+
+        .section-head {
+            display: flex;
+            align-items: baseline;
+            gap: 0.9rem;
+            margin-bottom: 1.2rem;
+        }
+
+        .section-head .icon {
+            width: 1.6rem;
+            height: 1.6rem;
+            align-self: center;
+            color: var(--accent-color);
+        }
+
+        .section-step {
+            font-family: var(--font-display);
+            font-size: 0.85rem;
+            color: var(--accent-color);
+            border: 1px solid rgba(90, 169, 255, 0.4);
+            border-radius: 999px;
+            padding: 0.1rem 0.6rem;
+        }
+
+        .section-title {
+            margin: 0;
+            font-family: var(--font-display);
+            font-size: clamp(1.5rem, 3vw, 2rem);
+            letter-spacing: -0.5px;
+        }
+
+        .section-lead {
+            margin: -0.6rem 0 1.4rem 0;
+            color: var(--text-muted);
+        }
+
+        .glass-card {
+            background: var(--surface);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+            border: 1px solid var(--border);
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+        }
+
+        /* Scroll-reveal (toggled by the inline IntersectionObserver script) */
+        .reveal {
+            opacity: 0;
+            transform: translateY(24px);
+            transition: opacity 0.7s ease, transform 0.7s cubic-bezier(.2, .8, .2, 1);
+        }
+
+        .reveal.visible {
+            opacity: 1;
+            transform: none;
+        }
+
+        /* ---------- Sounding section ---------- */
+
+        .sounding-layout {
+            display: grid;
+            grid-template-columns: minmax(280px, 380px) 1fr;
+            gap: 1.25rem;
+        }
+
+        @media (max-width: 920px) {
+            .sounding-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            padding: 1.4rem;
+        }
+
+        .field {
+            margin-bottom: 1.1rem;
+        }
+
+        .field-label {
+            display: block;
+            margin-bottom: 0.4rem;
+            font-size: 0.78rem;
+            font-weight: 600;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            color: var(--text-faint);
+        }
+
+        .field-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            align-items: center;
         }
 
         /* Scoped to #IntroScreen so dat.GUI's own <select>/<input> controls (which appear later, inside
            the running simulation) are never affected by this. */
         #IntroScreen select,
-        #IntroScreen input[type="date"] {
-            padding: 8px 12px;
+        #IntroScreen input[type="date"],
+        #IntroScreen input[type="text"] {
+            width: 100%;
+            padding: 0.7rem 0.9rem;
+            font-family: inherit;
             font-size: 0.95rem;
             color: var(--text-color);
-            background: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.25);
-            border-radius: var(--border-radius);
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--border-strong);
+            border-radius: 12px;
+            color-scheme: dark;
+            transition: border-color var(--transition-speed), background var(--transition-speed);
         }
 
-        /* The rule above only styles the closed <select> box -- most browsers render the OPEN dropdown
-           list's <option> rows with the OS-native background (usually white) while still inheriting the
-           light `color` above, producing unreadable white-on-white text. Set both explicitly. */
+        #IntroScreen .field-row input[type="date"],
+        #IntroScreen .field-row select {
+            width: auto;
+            flex: 1 1 140px;
+        }
+
+        #IntroScreen select:focus,
+        #IntroScreen input:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        /* Most browsers render the OPEN dropdown's <option> rows with the OS-native (white) background while
+           inheriting the light text color above -- set both explicitly to stay readable. */
         #IntroScreen select option {
             background-color: #1e293b !important;
             color: #ffffff !important;
@@ -535,30 +833,24 @@
 
         .station-search-row {
             position: relative;
-            margin-bottom: 0.75rem;
-            max-width: 420px;
         }
 
-        .station-search {
-            width: 100%;
-            max-width: 420px;
-            padding: 10px 14px;
+        .station-search-row > .icon {
+            position: absolute;
+            left: 0.85rem;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-faint);
+            pointer-events: none;
+        }
+
+        #IntroScreen input.station-search {
+            padding-left: 2.4rem;
             font-size: 1rem;
-            color: var(--text-color);
-            background: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.25);
-            border-radius: var(--border-radius);
-            box-sizing: border-box;
         }
 
         .station-search::placeholder {
-            color: rgba(255, 255, 255, 0.55);
-        }
-
-        .station-search:focus {
-            outline: none;
-            border-color: var(--accent-color);
-            background: rgba(255, 255, 255, 0.14);
+            color: var(--text-faint);
         }
 
         .city-suggestions {
@@ -566,124 +858,469 @@
             top: calc(100% + 6px);
             left: 0;
             right: 0;
-            z-index: 5;
-            max-height: 280px;
+            z-index: 20;
+            max-height: 300px;
             overflow-y: auto;
-            background: rgba(20, 30, 45, 0.92);
+            background: rgba(14, 22, 40, 0.96);
             backdrop-filter: blur(16px);
             -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: var(--border-radius);
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+            border: 1px solid var(--border-strong);
+            border-radius: 12px;
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
         }
 
         .city-suggestion {
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            gap: 0.75rem;
+            gap: 0.6rem;
             padding: 0.6rem 0.9rem;
             cursor: pointer;
             font-size: 0.92rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
         }
 
         .city-suggestion:last-child {
             border-bottom: none;
         }
 
-        .city-suggestion:hover {
-            background: rgba(255, 255, 255, 0.12);
+        .city-suggestion:hover,
+        .city-suggestion.active {
+            background: rgba(90, 169, 255, 0.18);
+        }
+
+        .city-suggestion > .icon {
+            color: var(--accent-color);
         }
 
         .city-suggestion-name {
-            color: var(--text-color);
+            flex: 1;
         }
 
         .city-suggestion-country {
-            color: rgba(255, 255, 255, 0.6);
-            font-size: 0.82rem;
-            white-space: nowrap;
+            color: var(--text-faint);
+            font-size: 0.8rem;
+            text-align: right;
         }
 
         .city-suggestion-empty {
             cursor: default;
-            color: rgba(255, 255, 255, 0.6);
+            color: var(--text-faint);
         }
 
         .city-suggestion-empty:hover {
             background: none;
         }
 
-        .sounding-title {
-            margin: 0 0 0.5rem 0;
-            font-size: 1.1rem;
-            font-weight: 600;
-            min-height: 1.3em;
+        .check-row {
+            display: flex;
+            gap: 0.6rem;
+            align-items: flex-start;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            cursor: pointer;
         }
 
-        #soundingDisplayCol {
-            width: 100%;
-            max-width: 640px;
+        .check-row input {
+            margin-top: 0.25rem;
+            accent-color: var(--accent-color);
+        }
+
+        .source-note {
+            margin: 0.4rem 0 0 0;
+            font-size: 0.8rem;
+            color: var(--text-faint);
+        }
+
+        .sounding-view {
+            padding: 1.2rem 1.4rem 1.4rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Thin animated bar along the top edge while a sounding is loading */
+        .sounding-view::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -40%;
+            width: 40%;
+            height: 3px;
+            background: linear-gradient(90deg, transparent, var(--accent-color), transparent);
+            opacity: 0;
+        }
+
+        #stations-section.is-loading .sounding-view::before {
+            opacity: 1;
+            animation: loadingSweep 1.1s linear infinite;
+        }
+
+        #stations-section.is-loading #soundingCanvas,
+        #stations-section.is-loading .stats-grid {
+            opacity: 0.35;
+        }
+
+        @keyframes loadingSweep {
+            to { left: 100%; }
+        }
+
+        .sounding-title {
+            margin: 0;
+            font-family: var(--font-display);
+            font-size: 1.2rem;
+            font-weight: 700;
+            min-height: 1.4em;
+        }
+
+        .sounding-status {
+            margin: 0.2rem 0 0.8rem 0;
+            min-height: 1.4em;
+            font-size: 0.9rem;
+            transition: color var(--transition-speed) ease;
+        }
+
+        .sounding-status.loading {
+            color: var(--text-muted);
+        }
+
+        .sounding-status.success {
+            color: var(--ok);
+        }
+
+        .sounding-status.error {
+            color: var(--danger);
         }
 
         .sounding-canvas {
             display: block;
             width: 100%;
-            max-width: 620px;
             height: 480px;
-            border-radius: var(--border-radius);
-            background: #00000055;
+            border-radius: 12px;
+            background: rgba(0, 0, 0, 0.3);
+            transition: opacity var(--transition-speed);
         }
 
-        .sounding-status {
-            min-height: 1.4em;
+        #soundingPreview[hidden] {
+            display: none;
+        }
+
+        #soundingPreview {
+            display: block;
+            max-width: 100%;
+            margin-top: 0.8rem;
+            border-radius: 12px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 0.6rem;
+            margin-top: 0.9rem;
+            transition: opacity var(--transition-speed);
+        }
+
+        .stat-tile {
+            padding: 0.6rem 0.75rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.04);
+            animation: fadeUp 0.45s ease both;
+        }
+
+        .stat-tile:nth-child(2) { animation-delay: 0.04s; }
+        .stat-tile:nth-child(3) { animation-delay: 0.08s; }
+        .stat-tile:nth-child(4) { animation-delay: 0.12s; }
+        .stat-tile:nth-child(5) { animation-delay: 0.16s; }
+        .stat-tile:nth-child(6) { animation-delay: 0.20s; }
+        .stat-tile:nth-child(7) { animation-delay: 0.24s; }
+
+        .stat-label {
+            display: block;
+            font-size: 0.72rem;
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+            color: var(--text-faint);
+        }
+
+        .stat-value {
+            display: block;
+            font-family: var(--font-display);
+            font-size: 1.1rem;
+            font-weight: 700;
+        }
+
+        .stat-moderate { border-color: rgba(255, 204, 77, 0.45); }
+        .stat-moderate .stat-value { color: #ffd76b; }
+        .stat-high { border-color: rgba(255, 140, 60, 0.6); background: rgba(255, 120, 40, 0.08); }
+        .stat-high .stat-value { color: #ffa45c; }
+        .stat-extreme { border-color: rgba(255, 70, 90, 0.7); background: rgba(255, 60, 80, 0.12); }
+        .stat-extreme .stat-value { color: #ff6b81; }
+
+        /* ---------- Map / resolution section ---------- */
+
+        .settings-panel {
+            padding: 1.6rem;
+        }
+
+        .slider-row {
+            display: grid;
+            grid-template-columns: 200px 1fr 90px;
+            gap: 1rem;
+            align-items: center;
+            padding: 0.6rem 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .slider-row:last-of-type {
+            border-bottom: none;
+        }
+
+        .slider-row output {
+            font-family: var(--font-display);
+            font-weight: 700;
+            text-align: right;
+        }
+
+        @media (max-width: 640px) {
+            .slider-row {
+                grid-template-columns: 1fr 70px;
+            }
+
+            .slider-row input {
+                grid-column: 1 / -1;
+                grid-row: 2;
+            }
+        }
+
+        input[type="range"] {
+            width: 100%;
+            accent-color: var(--accent-color);
+        }
+
+        .warning {
+            margin: 0.2rem 0 0;
+            color: var(--danger);
+            font-size: 0.85rem;
+        }
+
+        .world-props {
+            margin: 0.8rem 0 0;
+            color: var(--text-muted);
             font-size: 0.95rem;
-            transition: color var(--transition-speed) ease;
         }
 
-        .sounding-status.loading {
-            color: rgba(255, 255, 255, 0.7);
+        .launch-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 1rem;
+            margin-top: 1.4rem;
         }
 
-        .sounding-status.success {
-            color: #6bdc7c;
+        .launch-row i {
+            color: var(--text-faint);
         }
 
-        .sounding-status.error {
-            color: #ff6b6b;
+        /* ---------- Saves ---------- */
+
+        .saves-layout {
+            display: grid;
+            grid-template-columns: minmax(260px, 340px) 1fr;
+            gap: 1.25rem;
+        }
+
+        @media (max-width: 860px) {
+            .saves-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .dropzone {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 0.4rem;
+            padding: 2rem 1.2rem;
+            text-align: center;
+            border: 2px dashed var(--border-strong);
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            transition: border-color var(--transition-speed), background var(--transition-speed);
+        }
+
+        .dropzone:hover {
+            border-color: var(--accent-color);
+            background: rgba(90, 169, 255, 0.06);
+        }
+
+        .dropzone .icon {
+            width: 2.4rem;
+            height: 2.4rem;
+            color: var(--accent-color);
+            stroke-width: 1.5;
+        }
+
+        .dropzone small {
+            color: var(--text-faint);
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+        .saves-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 0.6rem;
+        }
+
+        .saves-grid a {
+            display: block;
+            padding: 0.75rem 0.9rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text-color);
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: background var(--transition-speed), transform var(--transition-speed);
+        }
+
+        .saves-grid a:hover {
+            background: var(--surface-hover);
+            transform: translateY(-2px);
+        }
+
+        .saves-grid a .icon {
+            margin-right: 0.4em;
+            color: var(--accent-color);
+        }
+
+        /* ---------- Help ---------- */
+
+        details.help {
+            margin-bottom: 1rem;
+            padding: 0 1.4rem;
+        }
+
+        details.help summary {
+            cursor: pointer;
+            padding: 1.1rem 0;
+            font-family: var(--font-display);
+            font-weight: 700;
+            font-size: 1.1rem;
+            list-style: none;
+        }
+
+        details.help summary::-webkit-details-marker {
+            display: none;
+        }
+
+        details.help summary::after {
+            content: '+';
+            float: right;
+            color: var(--accent-color);
+            transition: transform var(--transition-speed);
+        }
+
+        details.help[open] summary::after {
+            transform: rotate(45deg);
+        }
+
+        details.help ul {
+            margin-top: 0;
+            color: var(--text-muted);
+        }
+
+        .keys-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 0.4rem 1.4rem;
+            padding-bottom: 1.2rem;
+        }
+
+        .key-item {
+            display: flex;
+            gap: 0.7rem;
+            align-items: baseline;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        kbd {
+            min-width: 2.2rem;
+            padding: 0.1rem 0.45rem;
+            border-radius: 6px;
+            border: 1px solid var(--border-strong);
+            border-bottom-width: 2px;
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text-color);
+            font-family: var(--font-body);
+            font-size: 0.8rem;
+            text-align: center;
+            white-space: nowrap;
+        }
+
+        .site-footer {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem clamp(1rem, 4vw, 2rem) 3rem;
+            text-align: center;
+            color: var(--text-faint);
+            font-size: 0.9rem;
+        }
+
+        .site-footer a {
+            color: var(--text-muted);
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.001ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.001ms !important;
+            }
+
+            .reveal {
+                opacity: 1;
+                transform: none;
+            }
         }
     </style>
 </head>
 
 <body id="body" onload="updateSetupSliders();">
-    <nav class="main-nav">
-        <div class="nav-title">
-            <h1>2D Weather Sandbox</h1>
-        </div>
-        <div class="nav-icons">
-            <a href="https://github.com/niels747/2D-Weather-Sandbox" target="_blank" rel="noopener noreferrer">
-                <img src="resources/img/Github.png" alt="GitHub">
-            </a>
-            <a href="https://www.patreon.com/user?u=76043935" target="_blank" rel="noopener noreferrer">
-                <img src="resources/img/Patreon.png" alt="Patreon">
-            </a>
-            <a href="https://www.youtube.com/user/nielsdaemen/videos" target="_blank" rel="noopener noreferrer">
-                <img src="resources/img/Youtube.png" alt="YouTube">
-            </a>
-            <a href="https://discord.gg/c4Xdf92PzG" target="_blank" rel="noopener noreferrer">
-                <img src="resources/img/Discord.png" alt="Discord">
-            </a>
-        </div>
-    </nav>
-
+    <!-- Icon sprite (stroke icons, 24x24): used as <svg class="icon"><use href="#i-NAME"/></svg>, also by app.js
+         (svgIcon()) for the in-game station bar, so it lives outside #IntroScreen. -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+        <defs>
+            <symbol id="i-storm" viewBox="0 0 24 24"><path d="M6 16.3A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 .5 9"/><path d="m13 12-3 5h4l-3 5"/></symbol>
+            <symbol id="i-tornado" viewBox="0 0 24 24"><path d="M21 4H3"/><path d="M18 8H6"/><path d="M19 12H9"/><path d="M16 16h-6"/><path d="M11 20H9"/></symbol>
+            <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+            <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15a1 1 0 0 0 1.5.9l12-7.5a1 1 0 0 0 0-1.8l-12-7.5A1 1 0 0 0 7 4.5Z"/></symbol>
+            <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="m21 21-4.6-4.6"/></symbol>
+            <symbol id="i-pin" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></symbol>
+            <symbol id="i-balloon" viewBox="0 0 24 24"><path d="M12 15c3.3 0 6-3 6-6.5S15.3 2 12 2 6 5 6 8.5 8.7 15 12 15Z"/><path d="m10.6 15 1.4 1.6 1.4-1.6"/><path d="M12 16.6c0 2.4-2 2.6-2 5.4"/></symbol>
+            <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 2.5 2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5-4.8-4.6 6.6-.9Z"/></symbol>
+            <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="m8 12.5 2.8 2.8L16.5 9.5"/></symbol>
+            <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+            <symbol id="i-loader" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.2-8.6"/></symbol>
+            <symbol id="i-wind" viewBox="0 0 24 24"><path d="M17.7 7.7a2.5 2.5 0 1 1 1.8 4.3H2"/><path d="M9.6 4.6A2 2 0 1 1 11 8H2"/><path d="M12.6 19.4A2 2 0 1 0 14 16H2"/></symbol>
+            <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M2 14h4"/><path d="M10 8h4"/><path d="M18 16h4"/></symbol>
+            <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
+            <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></symbol>
+            <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 15 4-6 4 3 5-8"/></symbol>
+            <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></symbol>
+        </defs>
+    </svg>
     <div id="IntroScreen">
 
         <div class="sky-bg" aria-hidden="true">
-            <div class="cloud" style="width:180px; height:60px; top:8%; animation-duration:70s; animation-delay:0s;"></div>
-            <div class="cloud" style="width:260px; height:80px; top:16%; animation-duration:95s; animation-delay:-20s;"></div>
-            <div class="cloud" style="width:140px; height:50px; top:28%; animation-duration:60s; animation-delay:-40s;"></div>
-            <div class="cloud" style="width:220px; height:70px; top:5%; animation-duration:85s; animation-delay:-55s;"></div>
+            <div class="flash"></div>
+            <div class="cloud" style="width:320px; height:90px; top:10%; animation-duration:90s; animation-delay:0s;"></div>
+            <div class="cloud" style="width:460px; height:120px; top:22%; animation-duration:120s; animation-delay:-40s;"></div>
+            <div class="cloud" style="width:240px; height:70px; top:34%; animation-duration:75s; animation-delay:-20s;"></div>
+            <div class="cloud" style="width:380px; height:100px; top:6%; animation-duration:105s; animation-delay:-70s;"></div>
             <div class="rain-line" style="left:12%; animation-duration:1.4s; animation-delay:0s;"></div>
             <div class="rain-line" style="left:22%; animation-duration:1.1s; animation-delay:-0.5s;"></div>
             <div class="rain-line" style="left:34%; animation-duration:1.6s; animation-delay:-1.1s;"></div>
@@ -692,334 +1329,276 @@
             <div class="rain-line" style="left:69%; animation-duration:1.3s; animation-delay:-1.3s;"></div>
             <div class="rain-line" style="left:78%; animation-duration:1.7s; animation-delay:-0.6s;"></div>
             <div class="rain-line" style="left:88%; animation-duration:1.2s; animation-delay:-1.0s;"></div>
+            <div class="rain-line" style="left:95%; animation-duration:1.5s; animation-delay:-0.2s;"></div>
         </div>
 
-        <header class="hero">
-            <h1 class="hero-title">2D Weather Sandbox</h1>
-            <p class="hero-subtitle">Simulez, analysez et déclenchez des orages violents dans un bac à sable
-                météorologique 2D piloté par de vrais radiosondages.</p>
-        </header>
-
-        <nav class="quick-nav" aria-label="Accès rapide aux outils d'analyse">
-            <a href="#stations-section">📈 <span>Émagramme</span></a>
-            <a href="#stations-section">🌡️ <span>Station Météo</span></a>
-            <a href="#controls-section">🛰️ <span>Radar</span></a>
+        <nav class="main-nav">
+            <a class="nav-brand" href="#top"><span class="logo"><svg class="icon"><use href="#i-storm"/></svg></span> 2D Weather Sandbox</a>
+            <div class="nav-links">
+                <a href="#stations-section">Sondage</a>
+                <a href="#startBtn">Simulation</a>
+                <a href="#saves-section">Sauvegardes</a>
+                <a href="#help-section">Aide</a>
+            </div>
+            <div class="nav-icons">
+                <a href="https://github.com/niels747/2D-Weather-Sandbox" target="_blank" rel="noopener noreferrer" title="GitHub">
+                    <img src="resources/img/Github.png" alt="GitHub">
+                </a>
+                <a href="https://www.patreon.com/user?u=76043935" target="_blank" rel="noopener noreferrer" title="Patreon">
+                    <img src="resources/img/Patreon.png" alt="Patreon">
+                </a>
+                <a href="https://www.youtube.com/user/nielsdaemen/videos" target="_blank" rel="noopener noreferrer" title="YouTube">
+                    <img src="resources/img/Youtube.png" alt="YouTube">
+                </a>
+                <a href="https://discord.gg/c4Xdf92PzG" target="_blank" rel="noopener noreferrer" title="Discord">
+                    <img src="resources/img/Discord.png" alt="Discord">
+                </a>
+            </div>
         </nav>
 
-        <section class="action-cards">
-            <a class="action-card glass-card" href="#startBtn">
-                <div class="action-card-icon">🌪️</div>
-                <h3>Nouvelle Simulation Sandbox</h3>
-                <p>Choisissez un sondage réel et lancez votre propre bac à sable météo.</p>
-            </a>
-            <a class="action-card glass-card" href="#presets-section">
-                <div class="action-card-icon">⛈️</div>
-                <h3>Scénarios Orageux / Tornades</h3>
-                <p>Rejouez des configurations historiques propices aux orages violents.</p>
-            </a>
-            <a class="action-card glass-card" href="#stations-section">
-                <div class="action-card-icon">📡</div>
-                <h3>Stations & Cartes</h3>
-                <p>Recherchez une station météo réelle ou chargez une carte sauvegardée.</p>
-            </a>
-            <a class="action-card glass-card" href="#resolution-settings">
-                <div class="action-card-icon">⚙️</div>
-                <h3>Paramètres</h3>
-                <p>Ajustez la résolution et les performances avant de démarrer.</p>
-            </a>
+        <header class="hero" id="top">
+            <span class="hero-kicker"><span class="dot"></span> Sondages en direct · n'importe quelle ville · prévisions à 15 jours</span>
+            <h1 class="hero-title" data-split>
+                <span class="word">2D</span> <span class="word word-accent">Weather</span><br><span class="word">Sandbox</span>
+            </h1>
+            <p class="hero-typed" aria-live="polite">
+                Simulez des <span class="typed-word" id="typedWord"></span><span class="caret"></span>
+            </p>
+            <p class="hero-subtitle">Un bac à sable météorologique 2D en temps réel, piloté par le profil vertical réel
+                de l'atmosphère au-dessus de la ville de votre choix.</p>
+            <div class="hero-actions">
+                <a class="btn btn-primary btn-large" href="#stations-section"><svg class="icon"><use href="#i-tornado"/></svg> Nouvelle simulation</a>
+                <a class="btn btn-large" href="#saves-section"><svg class="icon"><use href="#i-folder"/></svg> Charger une sauvegarde</a>
+            </div>
+            <a class="scroll-hint" href="#stations-section">Défiler<span></span></a>
+        </header>
+
+        <!-- ① Sounding -->
+        <section id="stations-section" class="section notranslate reveal" translate="no">
+            <div class="section-head">
+                <span class="section-step">01</span>
+                <svg class="icon"><use href="#i-chart"/></svg>
+                <h2 class="section-title">Choisissez l'atmosphère</h2>
+            </div>
+            <p class="section-lead">Recherchez n'importe quelle ville du monde, une date et une heure : le profil
+                température / humidité / vent est chargé puis appliqué à la simulation.</p>
+
+            <div class="sounding-layout">
+                <div class="panel glass-card">
+                    <div class="field">
+                        <label class="field-label" for="stationSearchInput">Ville</label>
+                        <div class="station-search-row">
+                            <svg class="icon"><use href="#i-search"/></svg>
+                            <input type="text" id="stationSearchInput" class="station-search"
+                                placeholder="Paris, Lille, Oklahoma City, Tokyo…" autocomplete="off" spellcheck="false" />
+                            <div id="citySearchResults" class="city-suggestions notranslate" translate="no" hidden></div>
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <label class="field-label" for="stationSelect">Ou un lieu favori</label>
+                        <select id="stationSelect"></select>
+                    </div>
+
+                    <div class="field">
+                        <label class="field-label" for="datePicker">Date &amp; heure (UTC)</label>
+                        <div class="field-row">
+                            <input type="date" id="datePicker" min="2010-01-01" />
+                            <select id="hourSelector">
+                                <option value="0">00 UTC</option>
+                                <option value="3">03 UTC</option>
+                                <option value="6">06 UTC</option>
+                                <option value="9">09 UTC</option>
+                                <option value="12" selected>12 UTC</option>
+                                <option value="15">15 UTC</option>
+                                <option value="18">18 UTC</option>
+                                <option value="21">21 UTC</option>
+                            </select>
+                        </div>
+                        <div class="field-row" style="margin-top: 0.5rem;">
+                            <button type="button" class="chip" data-day-offset="0">Aujourd'hui</button>
+                            <button type="button" class="chip" data-day-offset="1">Demain</button>
+                            <button type="button" class="chip" data-day-offset="2">Après-demain</button>
+                            <button type="button" class="chip" data-day-offset="-1">Hier</button>
+                        </div>
+                    </div>
+
+                    <div class="field" id="presets-section">
+                        <label class="field-label" for="presetSelect">Scénarios orageux</label>
+                        <select id="presetSelect"></select>
+                    </div>
+
+                    <label class="check-row">
+                        <input type="checkbox" id="applySoundingAtStart" checked />
+                        <span>Appliquer ce sondage dès le démarrage (Sounding Forcing). Il reste modifiable en jeu.</span>
+                    </label>
+
+                    <p class="source-note">Données : modèle Open-Meteo (depuis 03/2021, prévisions incluses) ·
+                        archive Meteociel en secours pour les dates plus anciennes.</p>
+                </div>
+
+                <div class="sounding-view glass-card" id="soundingDisplayCol">
+                    <h3 id="soundingTitle" class="sounding-title"></h3>
+                    <p id="soundingStatus" class="sounding-status notranslate" translate="no"></p>
+                    <canvas id="soundingCanvas" width="620" height="480" class="sounding-canvas"></canvas>
+                    <div id="soundingStats" class="stats-grid"></div>
+                    <img id="soundingPreview" hidden alt="Émagramme officiel Meteociel">
+                </div>
+            </div>
         </section>
 
-        <div id="presets-section" class="glass-card setup-section">
-            <h3 class="glass-card-title">⛈️ Scénarios Orageux / Tornades</h3>
-            Preset:<select id="presetSelect" style="margin: 10px;"></select>
-        </div>
-
-        <div id="stations-section" class="glass-card setup-section notranslate" translate="no" style="overflow: auto;">
-            <h3 class="glass-card-title">📡 Station Météo & Émagramme</h3>
-            <div style="width: 100%;">
-                <div style="float: left; margin-right: 100px; max-width: 420px;">
-                    <div class="station-search-row">
-                        <input type="text" id="stationSearchInput" class="station-search" list="stationSearchList"
-                            placeholder="Rechercher n'importe quelle ville dans le monde..." autocomplete="off" />
-                        <datalist id="stationSearchList"></datalist>
-                        <div id="citySearchResults" class="city-suggestions notranslate" translate="no" hidden></div>
-                    </div>
-                    <div>
-                        <select id="stationSelect"></select>
-                        <input type="date" id="datePicker" value="2025-06-15" min="2010-01-01"
-                            onchange="prepareSounding();" />
-
-                        <select id="hourSelector" onchange="prepareSounding();">
-                            <option value="0">00H</option>
-                            <option value="6">06H</option>
-                            <option value="12" selected>12H</option>
-                            <option value="18">18H</option>
-                        </select>
-                        <p>Select a real world sounding to use as forcing in the simulation</p>
-                        <p id="soundingStatus" class="sounding-status notranslate" translate="no"></p>
-                    </div>
-                </div>
-                <div style="float: left; overflow: hidden;" id="soundingDisplayCol" class="notranslate" translate="no">
-                    <h4 id="soundingTitle" class="sounding-title"></h4>
-                    <img style="height: 480px;" id="soundingPreview" hidden
-                        alt="Émagramme officiel Meteociel">
-                    <canvas id="soundingCanvas" width="620" height="480" class="sounding-canvas"></canvas>
-                </div>
+        <!-- ② Map & resolution -->
+        <section class="section reveal">
+            <div class="section-head">
+                <span class="section-step">02</span>
+                <svg class="icon"><use href="#i-sliders"/></svg>
+                <h2 class="section-title">Réglez la carte</h2>
             </div>
-        </div>
+            <p class="section-lead">Plus de résolution = plus de détails, mais beaucoup plus de calcul pour la carte
+                graphique.</p>
 
-        <form id="startBtn" class="glass-card setup-section" oninput="updateSetupSliders();">
-            <div class="resolution-warning">
-                <p>Choose a resolution - Higher resolutions provide more detail but significantly impact performance
-                </p>
-            </div>
-
-            <table id="resolution-settings" style="scroll-margin-top: 5.5rem;">
-                <tr>
-                    <td><b>Horizontal resolution</b></td>
-                    <td style="width: 30%">
+            <form id="startBtn" class="settings-panel glass-card" oninput="updateSetupSliders();" onsubmit="return false;">
+                <div id="resolution-settings">
+                    <div class="slider-row">
+                        <label for="simResSelX"><b>Résolution horizontale</b></label>
                         <input type="range" min="100" max="16000" value="3000" step="100" id="simResSelX" />
                         <output id="simResShowX"></output>
-                    </td>
-                    <td id="simWorldProperties" style="color:rgb(255, 255, 255); width: 50%"> Cellheight: 40m Sim
-                        width:
-                        40 km</td>
-                </tr>
-                <tr>
-                    <td><b>Vertical resolution</b></td>
-                    <td>
+                    </div>
+                    <div class="slider-row">
+                        <label for="simResSelY"><b>Résolution verticale</b></label>
                         <input type="range" min="100" max="600" value="600" step="10" id="simResSelY" />
                         <output id="simResShowY"></output>
-                    </td>
-                    <td><i id="simResYWarning" style="color:rgb(255, 61, 61); display: none;">Vertical resolutions
-                            other
-                            than 600 are not optimized and may be buggy!</i></td>
-                </tr>
-                <tr>
-                    <td><b>Simulation height</b></td>
-                    <td>
+                    </div>
+                    <p id="simResYWarning" class="warning" style="display: none;">Les résolutions verticales autres que
+                        600 ne sont pas optimisées et peuvent être instables.</p>
+                    <div class="slider-row">
+                        <label for="simHeightSel"><b>Hauteur simulée</b></label>
                         <input type="range" min="5000" max="15000" value="12000" step="100" id="simHeightSel" />
                         <output id="simHeightShow"></output>
-                    </td>
-                    <td><i id="simHeightWarning" style="color:rgb(255, 61, 61); display: none;">Sim heights other
-                            than
-                            12000 m are not optimized and may be buggy!</i></td>
-                </tr>
-            </table>
-            <input type="button" value="Create New Simulation" onclick="loadData ()" />
-            <i>Move the mouse until you see a terrain you like, then just click to start.</i>
-        </form>
+                    </div>
+                    <p id="simHeightWarning" class="warning" style="display: none;">Les hauteurs autres que 12 000 m ne
+                        sont pas optimisées et peuvent être instables.</p>
+                </div>
+                <p id="simWorldProperties" class="world-props"></p>
 
+                <div class="launch-row">
+                    <button type="button" class="btn btn-primary btn-large" onclick="loadData()"><svg class="icon"><use href="#i-play"/></svg> Créer la simulation</button>
+                    <i>Bougez la souris jusqu'à trouver un relief qui vous plaît, puis cliquez pour démarrer.</i>
+                </div>
+            </form>
+        </section>
 
-        <p class="glass-card setup-section">
-            <label for="fileInput">Load Save File:</label>
-            <input type="file" id="fileInput" name="fileInput" accept=".weathersandbox " onchange="loadData()" />
-        </p>
+        <!-- ③ Saves -->
+        <section id="saves-section" class="section reveal">
+            <div class="section-head">
+                <span class="section-step">03</span>
+                <svg class="icon"><use href="#i-folder"/></svg>
+                <h2 class="section-title">… ou reprenez une sauvegarde</h2>
+            </div>
+            <div class="saves-layout">
+                <label class="dropzone glass-card" for="fileInput">
+                    <svg class="icon"><use href="#i-folder"/></svg>
+                    <b>Ouvrir un fichier .weathersandbox</b>
+                    <small>La simulation démarre dès le chargement</small>
+                    <input type="file" id="fileInput" name="fileInput" accept=".weathersandbox" onchange="loadData()" />
+                </label>
+                <div class="panel glass-card">
+                    <span class="field-label">Exemples à télécharger</span>
+                    <div class="saves-grid">
+                        <a href="./saves/Background image.weathersandbox"><svg class="icon"><use href="#i-download"/></svg>Background image</a>
+                        <a href="./saves/Hotlake Valley.weathersandbox"><svg class="icon"><use href="#i-download"/></svg>Hotlake Valley</a>
+                        <a href="./saves/Mountain uplift cell.weathersandbox"><svg class="icon"><use href="#i-download"/></svg>Mountain uplift cell at sunset</a>
+                        <a href="./saves/480 km map with strong derecho.weathersandbox"><svg class="icon"><use href="#i-download"/></svg>480 km map with strong derecho</a>
+                        <a href="./saves/Three Nice Cells.weathersandbox"><svg class="icon"><use href="#i-download"/></svg>Three nice cells</a>
+                        <a href="./saves/Mountain Snow Storm.weathersandbox"><svg class="icon"><use href="#i-download"/></svg>Mountain snow storm</a>
+                        <a href="./saves/Powerful & Longlasting Cell.weathersandbox"><svg class="icon"><use href="#i-download"/></svg>Powerful &amp; longlasting cell</a>
+                        <a href="./saves/Rain Sucked Up.weathersandbox"><svg class="icon"><use href="#i-download"/></svg>Updraft sucking up rain into hail</a>
+                        <a href="./saves/Powerful Hail and Snow Cells.weathersandbox"><svg class="icon"><use href="#i-download"/></svg>Powerful hail and snow cells</a>
+                        <a href="./saves/Very nice cell over coastal mountain.weathersandbox"><svg class="icon"><use href="#i-download"/></svg>Cell over coastal mountain</a>
+                        <a href="./saves/Awesome Convergence Cell.weathersandbox"><svg class="icon"><use href="#i-download"/></svg>Awesome convergence cell</a>
+                        <a href="./saves/Two nice cells in lake valley.weathersandbox"><svg class="icon"><use href="#i-download"/></svg>Two cells in lake valley</a>
+                        <a href="./saves/Insane CAPE.weathersandbox"><svg class="icon"><use href="#i-download"/></svg>Insane CAPE</a>
+                        <a href="./saves/100 X 100 Test.weathersandbox"><svg class="icon"><use href="#i-download"/></svg>100 × 100 test</a>
+                    </div>
+                </div>
+            </div>
+        </section>
 
-        <div class="example-files">
-            <h3>Example Save Files</h3>
-            <p><a style="color: white" href="./saves/Background image.weathersandbox">Background image</a></p>
-            <p><a style="color: white" href="./saves/Hotlake Valley.weathersandbox">Hotlake Valley</a></p>
-            <p><a style="color: white" href="./saves/Mountain uplift cell.weathersandbox">Mountain Uplift Cell at
-                    sunset</a></p>
-            <p><a style="color: white" href="./saves/480 km map with strong derecho.weathersandbox">480 km map with
-                    strong Derecho</a></p>
-            <p><a style="color: white" href="./saves/Three Nice Cells.weathersandbox">Three Nice Cells</a></p>
-            <p><a style="color: white" href="./saves/Mountain Snow Storm.weathersandbox">Mountain Snow Storm</a></p>
-            <p><a style="color: white" href="./saves/Powerful & Longlasting Cell.weathersandbox">Powerful &
-                    Longlasting
-                    Cell</a></p>
-            <p><a style="color: white" href="./saves/Rain Sucked Up.weathersandbox">Powerful updraft sucking up rain
-                    and
-                    turning it into hail.</a></p>
-            <p><a style="color: white" href="./saves/Powerful Hail and Snow Cells.weathersandbox">Powerful Hail and
-                    Snow
-                    Cells</a></p>
-            <p><a style="color: white" href="./saves/Very nice cell over coastal mountain.weathersandbox">Very nice
-                    cell
-                    over coastal mountain</a></p>
-            <p><a style="color: white" href="./saves/Awesome Convergence Cell.weathersandbox">Awesome Convergence
-                    Cell</a></p>
-            <p><a style="color: white" href="./saves/Two nice cells in lake valley.weathersandbox">Two nice cells in
-                    lake valley</a></p>
-            <p><a style="color: white" href="./saves/Insane CAPE.weathersandbox">Insane CAPE</a></p>
-            <p><a style="color: white" href="./saves/100 X 100 Test.weathersandbox">100 X 100 Test</a></p>
-        </div>
+        <!-- Help -->
+        <section id="help-section" class="section reveal">
+            <div class="section-head">
+                <span class="section-step">?</span>
+                <svg class="icon"><use href="#i-help"/></svg>
+                <h2 class="section-title">Aide &amp; commandes</h2>
+            </div>
 
-        <div id="help" class="tips">
-            <h2>Tips</h2>
-            <ul>
-                <li>Vertical resolution of 300 gives most realistic results</li>
-                <li>Larger horizontal resolutions allow stronger converging winds to develop, forming more
-                    realistic,
-                    longer lasting cells</li>
-                <li>Performance is mostly GPU dependent, GTX 1070 or better recommended for realtime gameplay</li>
-                <li>If you have a laptop with a dedicated GPU, make sure the browser is actually using it! It's
-                    often
-                    using the integrated graphics by default</li>
-                <li>Play in fullscreen mode (F11)</li>
-            </ul>
-        </div>
+            <details class="help glass-card" id="help" open>
+                <summary>Conseils</summary>
+                <ul>
+                    <li>Une résolution verticale de 300 donne les résultats les plus réalistes.</li>
+                    <li>Une grande résolution horizontale laisse se développer une convergence plus forte : cellules
+                        plus réalistes et plus durables.</li>
+                    <li>En jeu, le panneau en bas à droite permet de charger le sondage de n'importe quelle ville à
+                        n'importe quelle date ; le réglage « Plafond du vent » atténue le vent en haute altitude.</li>
+                    <li>Les performances dépendent surtout du GPU (GTX 1070 ou mieux recommandé). Sur portable,
+                        vérifiez que le navigateur utilise bien la carte graphique dédiée.</li>
+                    <li>Jouez en plein écran (F11).</li>
+                </ul>
+            </details>
 
-        <div id="controls-section" class="controls">
-            <h2>Controls</h2>
-            <p style="color: rgba(255,255,255,0.75); margin-top: -0.5rem;">Display modes 1-9 include a
-                precipitation-mass view usable as a simple radar overlay once the simulation is running.</p>
-            <h3>Mouse</h3>
-            <ul>
-                <li>Middle mouse button to drag the simulation area around</li>
-                <li>Mouse wheel to zoom in and out, Or to change brush size while holding down B</li>
-                <li>Left mouse button to use selected tool. Hold down Ctrl (command on mac) to perform the inverted
-                    action</li>
-                <li>Touchscreen input is pretty basic for now, will add more controls in the future</li>
-            </ul>
-            <h3>Keys</h3>
-            <table style="width: 100%">
-                <tr>
-                    <td>1 - 9</td>
-                    <td>Display Modes</td>
-                </tr>
-                <tr>
-                    <td>K</td>
-                    <td>Air Quality Display</td>
-                </tr>
-                <tr>
-                    <td>C</td>
-                    <td>Relative Humidity & Cloud Density Display</td>
-                </tr>
-                <tr>
-                    <td>QWERTYUIOP [ ] \</td>
-                    <td>Tools</td>
-                </tr>
-                <tr>
-                    <td>Left Ctrl</td>
-                    <td>Invert Tool Action</td>
-                </tr>
-                <tr>
-                    <td>Esc</td>
-                    <td>No Tool, Flashlight</td>
-                </tr>
-                <tr>
-                    <td>Arrows ◄ ▲ ▼ ►</td>
-                    <td>Move View</td>
-                </tr>
-                <tr>
-                    <td>+ -</td>
-                    <td>Zoom In / Out</td>
-                </tr>
-                <tr>
-                    <td>Right Ctrl</td>
-                    <td>Hold For Slower Pan speed</td>
-                </tr>
-                <tr>
-                    <td>Space Bar</td>
-                    <td>Pause / Resume</td>
-                </tr>
-                <tr>
-                    <td>Tab</td>
-                    <td>Show / Hide Velocity Vectors</td>
-                </tr>
-                <tr>
-                    <td>A</td>
-                    <td>Toggle Flight Simulator Mode. Vertical Mouse position controls elevator, Throttle: ▲ ▼ </td>
-                </tr>
-                <tr>
-                    <td>F</td>
-                    <td>Toggle camera following plane</td>
-                </tr>
-                <tr>
-                    <td>Shift</td>
-                    <td>Toggle Gear</td>
-                </tr>
-                <tr>
-                    <td>Z</td>
-                    <td>Drop water from airplane to extinguish fires</td>
-                </tr>
-                <tr>
-                    <td>CapsLk</td>
-                    <td>Autopilot</td>
-                </tr>
-                <tr>
-                    <td>.</td>
-                    <td>Brakes</td>
-                </tr>
-                <tr>
-                    <td>/</td>
-                    <td>Toggle Engine</td>
-                </tr>
-                <tr>
-                    <td>D</td>
-                    <td>Show / Hide Droplets</td>
-                </tr>
-                <tr>
-                    <td>X</td>
-                    <td>Toggle follow droplet</td>
-                </tr>
-                <tr>
-                    <td>G</td>
-                    <td>Show / Hide Sounding Graph</td>
-                </tr>
-                <tr>
-                    <td>N</td>
-                    <td>Show / Hide Weather Stations</td>
-                </tr>
-                <tr>
-                    <td>M</td>
-                    <td>Add / Remove Weather Stations</td>
-                </tr>
-                <tr>
-                    <td>H</td>
-                    <td>Show / Hide GUI</td>
-                </tr>
-                <tr>
-                    <td>V</td>
-                    <td>Reset View</td>
-                </tr>
-                <tr>
-                    <td>B</td>
-                    <td>Hold To Change Brush Size By Scrolling</td>
-                </tr>
-                <tr>
-                    <td>B x 2</td>
-                    <td>Toggle Whole Width Brush</td>
-                </tr>
-                <tr>
-                    <td>L</td>
-                    <td>Reload From Save File</td>
-                </tr>
-                <tr>
-                    <td>Home</td>
-                    <td>1 Iteration/sec</td>
-                </tr>
-                <tr>
-                    <td>End</td>
-                    <td>Auto Iterations/sec</td>
-                </tr>
-                <tr>
-                    <td>PgUp</td>
-                    <td>Increase Iterations/sec</td>
-                </tr>
-                <tr>
-                    <td>PgDn</td>
-                    <td>Decrease Iterations/sec</td>
-                </tr>
-            </table>
-        </div>
+            <details class="help glass-card" id="controls-section">
+                <summary>Souris</summary>
+                <ul>
+                    <li>Bouton du milieu : déplacer la vue</li>
+                    <li>Molette : zoom, ou taille du pinceau en maintenant B</li>
+                    <li>Clic gauche : outil sélectionné. Maintenir Ctrl (Cmd sur Mac) pour l'action inverse</li>
+                    <li>L'écran tactile n'a pour l'instant que des contrôles basiques</li>
+                </ul>
+            </details>
 
-        <div class="support">
-            <h1 style="color: rgb(0, 255, 0)">$ Support me on Patreon $</h1>
-            If you love my project and want to support its future development, please consider <a
-                href="https://www.patreon.com/user?u=76043935" target="_blank" rel="noopener noreferrer"
-                style="color: white">supporting me on patreon</a>
-            <br />
-            Every small amount helps! Thank you!
-            <br />
-            <br />
-            <br />
-            <i>By Niels Daemen</i>
-        </div>
-    </div>
+            <details class="help glass-card">
+                <summary>Clavier</summary>
+                <div class="keys-grid">
+                    <div class="key-item"><kbd>1 - 9</kbd> Modes d'affichage</div>
+                    <div class="key-item"><kbd>K</kbd> Qualité de l'air</div>
+                    <div class="key-item"><kbd>C</kbd> Humidité relative &amp; densité des nuages</div>
+                    <div class="key-item"><kbd>QWERTYUIOP [ ] \</kbd> Outils</div>
+                    <div class="key-item"><kbd>Ctrl gauche</kbd> Inverser l'outil</div>
+                    <div class="key-item"><kbd>Échap</kbd> Aucun outil, lampe torche</div>
+                    <div class="key-item"><kbd>◄ ▲ ▼ ►</kbd> Déplacer la vue</div>
+                    <div class="key-item"><kbd>+ -</kbd> Zoom</div>
+                    <div class="key-item"><kbd>Ctrl droit</kbd> Déplacement lent</div>
+                    <div class="key-item"><kbd>Espace</kbd> Pause / reprise</div>
+                    <div class="key-item"><kbd>Tab</kbd> Vecteurs de vitesse</div>
+                    <div class="key-item"><kbd>A</kbd> Mode simulateur de vol</div>
+                    <div class="key-item"><kbd>F</kbd> Caméra qui suit l'avion</div>
+                    <div class="key-item"><kbd>Shift</kbd> Train d'atterrissage</div>
+                    <div class="key-item"><kbd>Z</kbd> Larguer de l'eau (incendies)</div>
+                    <div class="key-item"><kbd>CapsLk</kbd> Pilote automatique</div>
+                    <div class="key-item"><kbd>.</kbd> Freins</div>
+                    <div class="key-item"><kbd>/</kbd> Moteur</div>
+                    <div class="key-item"><kbd>D</kbd> Afficher les gouttes</div>
+                    <div class="key-item"><kbd>X</kbd> Suivre une goutte</div>
+                    <div class="key-item"><kbd>G</kbd> Graphique du sondage</div>
+                    <div class="key-item"><kbd>N</kbd> Afficher les stations</div>
+                    <div class="key-item"><kbd>M</kbd> Ajouter / retirer une station</div>
+                    <div class="key-item"><kbd>H</kbd> Afficher / masquer l'interface</div>
+                    <div class="key-item"><kbd>V</kbd> Réinitialiser la vue</div>
+                    <div class="key-item"><kbd>B</kbd> + molette : taille du pinceau</div>
+                    <div class="key-item"><kbd>B × 2</kbd> Pinceau pleine largeur</div>
+                    <div class="key-item"><kbd>L</kbd> Recharger la sauvegarde</div>
+                    <div class="key-item"><kbd>Origine</kbd> 1 itération / s</div>
+                    <div class="key-item"><kbd>Fin</kbd> Itérations / s auto</div>
+                    <div class="key-item"><kbd>PgUp / PgDn</kbd> + / − d'itérations / s</div>
+                </div>
+            </details>
+        </section>
 
+        <footer class="site-footer support">
+            Créé par <b>Niels Daemen</b> — si vous aimez le projet, vous pouvez le
+            <a href="https://www.patreon.com/user?u=76043935" target="_blank" rel="noopener noreferrer">soutenir sur Patreon</a>.
+            <br>Version PLUS par Cieux Instables.
+        </footer>
     </div>
 
     <canvas id="graphCanvas"></canvas>
@@ -1028,6 +1607,73 @@
     <canvas id="mainCanvas">
         Your browser does not support HTML5, you must be using a really old browser!
     </canvas>
+
+    <script>
+        // Home-screen animations only -- everything here lives inside #IntroScreen and stops mattering once
+        // the simulation starts and app.js removes it.
+        (function () {
+            // Split the hero title into per-letter spans for the staggered entrance.
+            let charIndex = 0;
+            document.querySelectorAll('[data-split] .word').forEach(word => {
+                const text = word.textContent;
+                word.textContent = '';
+                for (const ch of text) {
+                    const span = document.createElement('span');
+                    span.className = 'char';
+                    span.textContent = ch;
+                    span.style.animationDelay = (0.25 + charIndex * 0.045) + 's' + (word.classList.contains('word-accent') ? ', ' + (1.6 + charIndex * 0.045) + 's' : '');
+                    word.appendChild(span);
+                    charIndex++;
+                }
+            });
+
+            // Typewriter cycling through storm types.
+            const words = ['supercellules', 'derechos', 'orages de grêle', 'lignes de grains', 'tempêtes de neige', 'orages de chaleur'];
+            const target = document.getElementById('typedWord');
+            const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            if (target) {
+                if (reduceMotion) {
+                    target.textContent = words[0];
+                } else {
+                    let wordIndex = 0, length = 0, deleting = false;
+                    const step = () => {
+                        if (!document.body.contains(target))
+                            return; // simulation started, intro removed
+                        const word = words[wordIndex];
+                        length += deleting ? -1 : 1;
+                        target.textContent = word.slice(0, length);
+                        let delay = deleting ? 40 : 85;
+                        if (!deleting && length === word.length) {
+                            deleting = true;
+                            delay = 1800;
+                        } else if (deleting && length === 0) {
+                            deleting = false;
+                            wordIndex = (wordIndex + 1) % words.length;
+                            delay = 350;
+                        }
+                        setTimeout(step, delay);
+                    };
+                    setTimeout(step, 1500);
+                }
+            }
+
+            // Reveal sections as they scroll into view.
+            const revealEls = document.querySelectorAll('.reveal');
+            if ('IntersectionObserver' in window && !reduceMotion) {
+                const observer = new IntersectionObserver(entries => {
+                    for (const entry of entries) {
+                        if (entry.isIntersecting) {
+                            entry.target.classList.add('visible');
+                            observer.unobserve(entry.target);
+                        }
+                    }
+                }, {threshold: 0.08});
+                revealEls.forEach(el => observer.observe(el));
+            } else {
+                revealEls.forEach(el => el.classList.add('visible'));
+            }
+        })();
+    </script>
 </body>
 
 </html>

@@ -18,7 +18,7 @@ function updateSetupSliders()
   let cellHeight = simHeight / simResY;
   let simWidth = cellHeight * simResX;
 
-  document.getElementById('simWorldProperties').innerHTML = 'cellHeight: ' + cellHeight.toFixed(1) + ' m  &nbsp&nbsp&nbsp   Simulation width: ' + (simWidth / 1000).toFixed(1) + ' km';
+  document.getElementById('simWorldProperties').textContent = 'Hauteur de cellule : ' + cellHeight.toFixed(1) + ' m  ·  Largeur de la carte : ' + (simWidth / 1000).toFixed(1) + ' km';
 
   document.getElementById('simHeightWarning').style.display = (simHeight == 12000) ? 'none' : 'block';
   document.getElementById('simResYWarning').style.display = (simResY == 600) ? 'none' : 'block';
@@ -70,12 +70,114 @@ function mixGeneric(a, b, t, {clamp = false} = {})
 
 const corsUrl = 'https://my-cors-proxy.nielsdaemen747.workers.dev/?url='; // my own proxy worker on cloudfare
 
-// Silent in-memory (session-only) cache of real Meteociel soundings already downloaded this session, keyed
-// by "stationID_timeStamp". Only ever populated with an actually successful, already-scraped table -- never
-// with a failure/null -- so a station or date that previously had no real archive still gets a fresh fetch
-// attempt (e.g. in case the archive appeared since), while re-picking the exact same station+date/hour the
-// player already loaded reuses the same table instantly with no network round-trip.
+// ===================== Sounding data sources =====================
+//
+// Two sources, tried in this order by loadSoundingAt():
+//  1) Open-Meteo (https://open-meteo.com): free, keyless, CORS-enabled weather-model profiles on 19
+//     pressure levels for ANY point on earth, at ANY hour, from 2021-03-23 up to ~15 days in the future
+//     (forecasts). This is what makes "any city" and in-game sounding switching reliable.
+//  2) Meteociel radiosonde archive, through the CORS proxy above: real balloon observations at a fixed set
+//     of launch sites (soundingStations[].id). Since mid-2026 meteociel answers automated requests with an
+//     anti-bot cookie check page instead of the data table, so this is only a fallback for dates Open-Meteo
+//     doesn't cover (before 2021-03-23). It is detected and reported cleanly instead of failing silently.
+
+// Session-only cache of successfully loaded tables, keyed by "lat_lon_epoch" (never caches failures, so a
+// retry after a network hiccup always refetches).
 const soundingCache = new Map();
+
+const OPEN_METEO_PRESSURE_LEVELS = [ 1000, 975, 950, 925, 900, 850, 800, 700, 600, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30 ];
+const OPEN_METEO_LEVEL_VARS = [ 'temperature', 'dew_point', 'relative_humidity', 'wind_speed', 'wind_direction', 'geopotential_height' ];
+const OPEN_METEO_SURFACE_VARS = [ 'temperature_2m', 'dew_point_2m', 'relative_humidity_2m', 'wind_speed_10m', 'wind_direction_10m', 'surface_pressure' ];
+const OPEN_METEO_START_EPOCH = Date.UTC(2021, 2, 23) / 1000; // first day with pressure-level data in the historical forecast archive
+const SOUNDING_MAX_FORECAST_DAYS = 15;
+
+function isFutureTimestamp(timeStamp) { return timeStamp > Math.floor(Date.now() / 1000); }
+
+function isBeyondForecastRange(timeStamp) { return timeStamp > Date.now() / 1000 + SOUNDING_MAX_FORECAST_DAYS * 86400; }
+
+// Stull (2011) wet-bulb approximation, only used to fill the 'tw' column the same way meteociel's table has one.
+function wetBulbStull(tC, rh)
+{
+  return tC * Math.atan(0.151977 * Math.sqrt(rh + 8.313659)) + Math.atan(tC + rh) - Math.atan(rh - 1.676331) +
+         0.00391838 * Math.pow(rh, 1.5) * Math.atan(0.023101 * rh) - 4.686035;
+}
+
+// Converts one hour of an Open-Meteo pressure-level response into the exact table format scrapeTableData()
+// produces for meteociel: [{alt, p, t, tw, td, rh, vel (km/h), angle}], index 0 = top, last = surface,
+// pressure non-decreasing. Levels below the model terrain (p >= surface pressure) are dropped.
+function openMeteoToSoundingTable(json, dateStr, hour)
+{
+  const hourly = json && json.hourly;
+  if (!hourly || !hourly.time)
+    return null;
+
+  let i = hourly.time.indexOf(dateStr + 'T' + String(hour).padStart(2, '0') + ':00');
+  if (i < 0)
+    i = hour;
+
+  const val = name => (hourly[name] && Number.isFinite(hourly[name][i])) ? hourly[name][i] : null;
+
+  const elevation = Number.isFinite(json.elevation) ? json.elevation : 0;
+  const surfaceP = val('surface_pressure');
+
+  const rows = [];
+
+  const sfc = {alt : elevation, p : surfaceP, t : val('temperature_2m'), td : val('dew_point_2m'), rh : val('relative_humidity_2m'), vel : val('wind_speed_10m'), angle : val('wind_direction_10m')};
+  if (Object.values(sfc).every(v => v !== null))
+    rows.push(sfc);
+
+  for (const p of OPEN_METEO_PRESSURE_LEVELS) {
+    const row = {alt : val('geopotential_height_' + p + 'hPa'), p : p, t : val('temperature_' + p + 'hPa'), td : val('dew_point_' + p + 'hPa'), rh : val('relative_humidity_' + p + 'hPa'), vel : val('wind_speed_' + p + 'hPa'), angle : val('wind_direction_' + p + 'hPa')};
+    if (Object.values(row).some(v => v === null))
+      continue;
+    if (surfaceP !== null && p >= surfaceP - 2)
+      continue; // underground level, extrapolated by the model
+    if (row.alt <= elevation + 10)
+      continue;
+    rows.push(row);
+  }
+
+  for (const row of rows)
+    row.tw = wetBulbStull(row.t, clamp(row.rh, 1, 100));
+
+  rows.sort((a, b) => a.p - b.p); // top of the atmosphere first, like meteociel
+
+  return rows.length >= 8 ? rows : null;
+}
+
+async function loadOpenMeteoSounding(lat, lon, timeStamp)
+{
+  const d = new Date(timeStamp * 1000);
+  const dateStr = d.toISOString().slice(0, 10);
+  const hour = d.getUTCHours();
+
+  const hourlyVars = [...OPEN_METEO_SURFACE_VARS ];
+  for (const p of OPEN_METEO_PRESSURE_LEVELS)
+    for (const v of OPEN_METEO_LEVEL_VARS)
+      hourlyVars.push(v + '_' + p + 'hPa');
+
+  const query = 'latitude=' + lat.toFixed(4) + '&longitude=' + lon.toFixed(4) + '&start_date=' + dateStr + '&end_date=' + dateStr + '&timezone=GMT&hourly=' + hourlyVars.join(',');
+
+  // The live forecast API covers the last ~3 months and the next 16 days, the historical forecast archive
+  // everything since 2021-03-23 up to about yesterday. Try the most likely one first, the other as fallback.
+  const isRecent = timeStamp > Date.now() / 1000 - 5 * 86400;
+  const hosts = isRecent ? [ 'https://api.open-meteo.com/v1/forecast', 'https://historical-forecast-api.open-meteo.com/v1/forecast' ]
+                         : [ 'https://historical-forecast-api.open-meteo.com/v1/forecast', 'https://api.open-meteo.com/v1/forecast' ];
+
+  for (const host of hosts) {
+    try {
+      const resp = await fetch(host + '?' + query);
+      if (!resp.ok)
+        continue;
+      const table = openMeteoToSoundingTable(await resp.json(), dateStr, hour);
+      if (table && isPlausibleSoundingTable(table))
+        return table;
+    } catch (err) {
+      console.warn('Open-Meteo indisponible (' + host + '):', err);
+    }
+  }
+  return null;
+}
 
 // Resolves the actual PNG URL of meteociel's own official émagramme image for a station/date, by
 // scraping the small graph page (map=1) the same way scrapeTableData() scrapes the raw data table
@@ -99,12 +201,18 @@ async function getSoundingGraphImgUrl(stationID, timeStamp)
   }
 }
 
-// Function to scrape table data from the given URL
+// Function to scrape table data from the given URL. Returns [] (never undefined) when the page holds no
+// sounding table, e.g. meteociel's anti-bot verification page.
 async function scrapeTableData(url)
 {
   try {
     const response = await fetch(corsUrl + encodeURIComponent(url));
     const html = await response.text();
+
+    if (html.includes('archive-message') || html.includes('archivebotok')) {
+      console.warn('Meteociel a renvoyé sa page de vérification anti-robot au lieu du tableau du sondage.');
+      return [];
+    }
 
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
@@ -116,6 +224,8 @@ async function scrapeTableData(url)
 
     rows.forEach(row => {
       const cells = row.querySelectorAll('td');
+      if (cells.length < 7)
+        return;
 
       const rowData = {
         alt : parseFloat(cells[0].textContent),
@@ -137,6 +247,7 @@ async function scrapeTableData(url)
 
   } catch (error) {
     console.error('Error fetching the data:', error);
+    return [];
   }
 }
 
@@ -145,20 +256,10 @@ function soundingTableUrl(stationID, timeStamp) { return 'https://www.meteociel.
 // A real sounding table lists pressure levels in non-decreasing order (index 0 = top of atmosphere down to
 // the surface, where pressure is highest). This is 'p', not 'alt': the reported geopotential height can
 // have minor local quirks near the top of the sounding on real data (harmless there since the sim never
-// reaches that high), so pressure is the reliable invariant to check. meteociel occasionally serves a
-// fallback/error page for a station with no observation at the requested date/hour, and scrapeTableData's
-// `table:nth-of-type(2)` selector can then latch onto an unrelated, much larger table elsewhere on that
-// page -- this rejects results that don't look like an actual sounding, rather than silently feeding bad
-// data into the sim.
-//
-// Some stations (confirmed live: Trappes/Paris) report "TEMP HD" (high-density) observations with several
-// thousand rows -- one every few meters of altitude -- rather than the ~40-70 row standard mandatory-level
-// table most stations return. The row cap here must stay comfortably above that, and consecutive rows in
-// an HD table very often round to the identical integer hPa value (pressure barely changes over a few
-// meters), so ties must be tolerated -- only an actual decrease (a scrambled/unrelated table) is rejected.
-// An earlier, stricter version of this check (length capped at 200, ties rejected) silently discarded
-// every real HD sounding, which is why some real stations/dates always failed to load despite the fetch
-// itself succeeding.
+// reaches that high), so pressure is the reliable invariant to check. Rejects results that don't look like
+// an actual sounding (an unrelated table on an error page), rather than silently feeding bad data into the
+// sim. High-density "TEMP HD" radiosonde tables can hold several thousand rows with tied pressure values,
+// so ties are allowed and the row cap stays high.
 function isPlausibleSoundingTable(table)
 {
   if (!table || table.length < 2 || table.length > 5000)
@@ -172,32 +273,68 @@ function isPlausibleSoundingTable(table)
   return true;
 }
 
-async function loadSoundingTable(stationID, timeStamp)
+async function loadMeteocielSounding(stationID, timeStamp)
 {
-  const url = soundingTableUrl(stationID, timeStamp);
+  if (isFutureTimestamp(timeStamp))
+    return null;
 
-  // Debug visibility into exactly what gets requested -- lets you verify in the browser console that the
-  // year/month/day/hour picked in the UI really match what's sent to Meteociel, instead of guessing from a
-  // generic "no sounding available" message.
-  const d = new Date(timeStamp * 1000);
-  console.log('Fetching sounding:', {
-    stationId : stationID,
-    year : d.getUTCFullYear(),
-    month : d.getUTCMonth() + 1,
-    day : d.getUTCDate(),
-    hour : d.getUTCHours(),
-    url : url,
-  });
+  const url = soundingTableUrl(stationID, timeStamp);
+  console.log('Fetching Meteociel sounding:', {stationId : stationID, date : new Date(timeStamp * 1000).toISOString(), url : url});
 
   const table = await scrapeTableData(url);
   return isPlausibleSoundingTable(table) ? table : null;
 }
 
-// Linearly interpolates a REAL station's raw sounding table to an arbitrary altitude within it, clamping
+// Loads a sounding for a location {lat, lon, id?} at a UTC epoch (seconds): Open-Meteo first, then the
+// meteociel radiosonde archive when the location is a launch site. Returns {table, source} or null; never
+// throws and never fabricates data.
+async function loadSoundingAt(location, timeStamp)
+{
+  if (!location || !Number.isFinite(location.lat) || !Number.isFinite(location.lon) || isBeyondForecastRange(timeStamp))
+    return null;
+
+  const cacheKey = location.lat.toFixed(3) + '_' + location.lon.toFixed(3) + '_' + timeStamp;
+  const cached = soundingCache.get(cacheKey);
+  if (cached)
+    return cached;
+
+  let result = null;
+
+  if (timeStamp >= OPEN_METEO_START_EPOCH) {
+    const table = await loadOpenMeteoSounding(location.lat, location.lon, timeStamp);
+    if (table)
+      result = {table, source : isFutureTimestamp(timeStamp) ? 'open-meteo-forecast' : 'open-meteo'};
+  }
+
+  if (!result && location.id) {
+    const table = await loadMeteocielSounding(location.id, timeStamp);
+    if (table)
+      result = {table, source : 'meteociel'};
+  }
+
+  if (result)
+    soundingCache.set(cacheKey, result);
+  return result;
+}
+
+function soundingSourceLabel(source)
+{
+  switch (source) {
+  case 'open-meteo-forecast':
+    return 'Prévision modèle (Open-Meteo)';
+  case 'open-meteo':
+    return 'Analyse modèle (Open-Meteo)';
+  case 'meteociel':
+    return 'Radiosondage réel (Meteociel)';
+  default:
+    return '';
+  }
+}
+
+// Linearly interpolates a station's raw sounding table to an arbitrary altitude within it, clamping
 // at the top/bottom of its range. Used by the setup-screen émagramme (calcBulkShearFromTable(), the CAPE/
-// CIN shading in drawSetupEmagram()) to sample a real table at heights that fall between its own levels --
-// this is single-table interpolation, not cross-station blending. Assumes `table` is sorted the same way
-// scrapeTableData() produces it (descending altitude, matching rawSoundingToSimSounding()'s own assumption).
+// CIN shading in drawSetupEmagram()). Assumes `table` is sorted the same way scrapeTableData() produces it
+// (descending altitude, matching rawSoundingToSimSounding()'s own assumption).
 function interpolateTableAtAltitude(table, targetAlt)
 {
   if (targetAlt >= table[0].alt)
@@ -216,16 +353,9 @@ function interpolateTableAtAltitude(table, targetAlt)
   return table[table.length - 1];
 }
 
-function isFutureTimestamp(timeStamp) { return timeStamp > Math.floor(Date.now() / 1000); } // no Meteociel archive has tomorrow's weather
-
-// Parses a native <input type="date">'s value into a UTC epoch (seconds) at the given hour. A native date
-// input's .value is ALWAYS "YYYY-MM-DD" per the HTML spec regardless of the browser's display locale (it
-// only ever *shows* it as DD/MM/YYYY, MM/DD/YYYY etc, never stores it that way) -- but parsing it with the
-// bare `new Date(str)` constructor is still risky: if that string is ever anything other than strict ISO
-// (a locale-fallback text input, a copy-pasted value, ...), `new Date(...)` silently guesses a format
-// (typically MM/DD/YYYY) instead of failing, which can swap month and day with no visible error. Explicit
-// regex extraction removes that ambiguity entirely and returns null (never NaN, which would otherwise flow
-// silently into isFutureTimestamp() and other math) for anything that isn't well-formed YYYY-MM-DD.
+// Parses a native <input type="date">'s value into a UTC epoch (seconds) at the given hour. Explicit
+// regex extraction (rather than `new Date(str)`, which silently guesses a format for anything non-ISO and
+// can swap month and day) returns null for anything that isn't well-formed YYYY-MM-DD.
 function parseIsoDateToEpoch(isoDateStr, hour)
 {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDateStr);
@@ -238,70 +368,30 @@ function parseIsoDateToEpoch(isoDateStr, hour)
   return Date.UTC(year, month - 1, day, hourNum, 0, 0) / 1000;
 }
 
-// Loads a single preset station's REAL Meteociel sounding only -- no synthetic/estimated fallback of any
-// kind. Returns null (never throws) for a future date, an unreachable proxy, or a station with no real
-// observation archived at this exact date/hour; the caller (prepareSounding()) shows an explicit
-// "no real data" message rather than fabricating anything.
-async function loadStationSounding(stationID, timeStamp)
+function formatSoundingTime(timeStamp)
 {
-  if (isFutureTimestamp(timeStamp))
-    return null;
-
-  const cacheKey = stationID + '_' + timeStamp;
-  const cached = soundingCache.get(cacheKey);
-  if (cached)
-    return cached;
-
-  try {
-    const table = await loadSoundingTable(stationID, timeStamp);
-    if (table)
-      soundingCache.set(cacheKey, table);
-    return table;
-  } catch (err) {
-    console.error('Sondage Meteociel indisponible:', err);
-    return null;
-  }
-}
-
-// For a searched city with no station of its own: tries every known station in order of distance and
-// returns the first one that actually has a REAL archived observation for this exact date/hour -- never
-// blends or estimates, strictly "closest station that really has the data". Sequential (not parallel) so
-// a nearby match stops the search immediately instead of hammering every station on the shared proxy.
-// Returns {table, stationKey, distanceKm}, or null if truly no station anywhere has real data (or the
-// date is in the future).
-async function findRealSoundingForCity(lat, lon, timeStamp, isStale = () => false)
-{
-  if (isFutureTimestamp(timeStamp))
-    return null;
-
-  const nearest = findNearestStations(lat, lon, Object.keys(soundingStations).length); // every station, closest first
-
-  for (const n of nearest) {
-    if (isStale())
-      return null;
-
-    const table = await loadStationSounding(soundingStations[n.key].id, timeStamp);
-    if (table)
-      return {table, stationKey : n.key, distanceKm : n.distanceKm};
-  }
-
-  return null;
+  const d = new Date(timeStamp * 1000);
+  return d.toLocaleDateString('fr-FR', {day : '2-digit', month : 'long', year : 'numeric', timeZone : 'UTC'}) + ' · ' + String(d.getUTCHours()).padStart(2, '0') + ' UTC';
 }
 
 function sampleIsInvalid(s) { return isNaN(s.t) || isNaN(s.td) || isNaN(s.vel); }
 
+// Wind is projected onto the sim's single horizontal axis per sample (u = vel * cos(angle)) BEFORE
+// interpolating between levels: interpolating the raw direction would turn e.g. 350° and 10° into 180°.
 function rawSoundingToSimSounding(soundingData, simHeight, inSimSoundingRes)
 {
   let soundingForSim = [];
 
-  soundingDataIndex = soundingData.length - 1; // start from lowest datapoint
+  let soundingDataIndex = soundingData.length - 1; // start from lowest datapoint
+
+  const uOf = s => s.vel * Math.cos(s.angle * degToRad); // km/h
 
   for (let y = 0; y < inSimSoundingRes; y++) {
 
     const inSimAlt = y * (simHeight / sim_res_y);
 
-    while (soundingData[soundingDataIndex]['alt'] < inSimAlt ||
-           sampleIsInvalid(soundingData[soundingDataIndex])) { // go up in the sounding until the altitude matches, or is more than the in sim altitude
+    while (soundingDataIndex > 0 && (soundingData[soundingDataIndex]['alt'] < inSimAlt ||
+                                     sampleIsInvalid(soundingData[soundingDataIndex]))) { // go up in the sounding until the altitude matches, or is more than the in sim altitude
       soundingDataIndex--;
     }
 
@@ -310,43 +400,57 @@ function rawSoundingToSimSounding(soundingData, simHeight, inSimSoundingRes)
     const sampleBelow = soundingData[Math.min(soundingDataIndex + 1, soundingData.length - 1)];
 
     let s = sampleAboveOrEqual;
-    if (sampleAboveOrEqual['alt'] != inSimAlt && inSimAlt >= soundingData[soundingData.length - 1].alt) {
+    let twoDimentionalVel = uOf(sampleAboveOrEqual);
+    if (sampleAboveOrEqual['alt'] != sampleBelow['alt'] && inSimAlt >= soundingData[soundingData.length - 1].alt && inSimAlt <= sampleAboveOrEqual['alt']) {
       let a = (inSimAlt - sampleBelow['alt']) / (sampleAboveOrEqual['alt'] - sampleBelow['alt']);
       s = mixGeneric(sampleBelow, sampleAboveOrEqual, a);
+      twoDimentionalVel = uOf(sampleBelow) * (1 - a) + uOf(sampleAboveOrEqual) * a;
     }
-
-    // console.log(inSimAlt, sampleBelow['alt'], sampleAboveOrEqual['alt'], s);
-
-    let twoDimentionalVel = s.vel * Math.cos(s.angle * degToRad);   // km/h
 
     const inSimVel = msToRawVelocity(twoDimentionalVel / 3.6);      // convert to m/s first
 
     soundingForSim[y] = {'t' : s.t, 'td' : s.td, 'vel' : inSimVel}; // Put the requered data in an array of objects
   }
 
-  // console.log('soundingForSim', soundingForSim);
-
   return soundingForSim;
 }
 
 var stationSelector;
 
+// Notable convective days. Model data (Open-Meteo) exists from 2021-03-23 on; the older ones can only come
+// from the meteociel radiosonde archive and are marked as such.
 const presets = [
-  {name : 'Summer storms in northern Italy', location : 'Milan', date : '2025-06-05', hour : 12}, {name : 'Some cells in the Netherlands', location : 'Essen', date : '2016-06-23', hour : 12},
-  {name : 'Supercell in the Netherlands', location : 'De Bilt', date : '2014-06-09', hour : 12}, {name : 'Cold winter on Gotland', location : 'Gotland', date : '2025-01-03', hour : 12},
-  {name : 'Spring cells in Germany', location : 'Stuttgart', date : '2021-06-09', hour : 12}, {name : 'Hot summer in Spain', location : 'Madrid', date : '2018-07-07', hour : 12},
-  {name : 'Double inversion over Sicily', location : 'Sicily', date : '2021-07-14', hour : 12}, {name : 'Low base with CAPE in Rome', location : 'Rome', date : '2021-07-16', hour : 12},
-  {name : 'High low level cape over mediterranean in fall', location : 'Ajaccio', date : '2025-10-23', hour : 12}
+  {name : 'Tornade de Moravie du Sud (24/06/2021)', location : 'Vienna', date : '2021-06-24', hour : 15},
+  {name : 'Derecho de Corse (18/08/2022)', location : 'Ajaccio', date : '2022-08-18', hour : 6},
+  {name : 'Grêle géante en Frioul (24/07/2023)', location : 'Udine', date : '2023-07-24', hour : 6},
+  {name : 'Orages d\'été en Italie du Nord', location : 'Milan', date : '2025-06-05', hour : 12},
+  {name : 'Spring cells in Germany', location : 'Stuttgart', date : '2021-06-09', hour : 12},
+  {name : 'Double inversion over Sicily', location : 'Sicily', date : '2021-07-14', hour : 12},
+  {name : 'Low base with CAPE in Rome', location : 'Rome', date : '2021-07-16', hour : 12},
+  {name : 'Cold winter on Gotland', location : 'Gotland', date : '2025-01-03', hour : 12},
+  {name : 'High low level CAPE over the Mediterranean in fall', location : 'Ajaccio', date : '2025-10-23', hour : 12},
+  {name : 'Supercell in the Netherlands (archive Meteociel)', location : 'De Bilt', date : '2014-06-09', hour : 12},
+  {name : 'Some cells in the Netherlands (archive Meteociel)', location : 'Essen', date : '2016-06-23', hour : 12},
+  {name : 'Hot summer in Spain (archive Meteociel)', location : 'Madrid', date : '2018-07-07', hour : 12},
 ];
 
 var startDate;
 var startLatitude;
 
+// When true (setup-screen checkbox), a new simulation starts with Sounding Forcing at full strength so the
+// sounding picked on the home screen actually shapes the atmosphere right away.
+var applySoundingAtStart = true;
+
 function createPresetSelect()
 {
   let select = document.getElementById('presetSelect');
 
-  //  console.log(presets);
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = 'Choisir un scénario…';
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  select.appendChild(placeholder);
 
   presets.forEach((preset, index) => {
     const option = document.createElement('option');
@@ -354,27 +458,23 @@ function createPresetSelect()
     option.textContent = preset.name;
     select.appendChild(option);
   });
-  select.value = -1;
 
   select.onchange = function() {
-    let preset = presets[select.selectedIndex];
+    let preset = presets[parseInt(select.value, 10)];
+    if (!preset)
+      return;
 
     document.getElementById('datePicker').value = preset.date;
-
     startDate = new Date(preset.date);
-
     document.getElementById('hourSelector').value = preset.hour;
 
-    stationSelector.selectedIndex = Object.keys(soundingStations).indexOf(preset.location);
-    stationSelector.dispatchEvent(new Event('change', {bubbles : true}));
-
-    prepareSounding();
+    setSoundingLocation(Object.assign({key : preset.location, label : preset.location}, soundingStations[preset.location]));
   };
 }
 
-// lon values are representative (station city/region centroid, same precision level as the existing lat
-// values) -- used only to find the nearest real sounding station to an arbitrary searched city (see
-// findNearestStation()), not as survey-grade coordinates.
+// Quick-pick locations. `id` = meteociel radiosonde station id (fallback archive only), null when the
+// location has no balloon launch site -- Open-Meteo works for any lat/lon. The city searched on the home
+// screen is added here too (custom : true) so the in-game station switcher offers it.
 const soundingStations = {
   'Andoya' : {id : 1010, lat : 69.1144, lon : 16.13},
   'Lapland' : {id : 2836, lat : 67.4160, lon : 26.60},
@@ -398,6 +498,7 @@ const soundingStations = {
   'Essen' : {id : 10410, lat : 51.4556, lon : 6.97},
   'Wroclaw' : {id : 12425, lat : 51.1079, lon : 17.03},
   'Brussels' : {id : 6458, lat : 50.8371, lon : 4.35},
+  'Lille' : {id : null, lat : 50.6339, lon : 3.06},
   'Meiningen' : {id : 10548, lat : 50.5678, lon : 10.38},
   'Kraków' : {id : 12575, lat : 50.0647, lon : 19.94},
   'Idar-Oberstein' : {id : 10618, lat : 49.7167, lon : 7.33},
@@ -411,6 +512,7 @@ const soundingStations = {
   'peißenberg' : {id : 10962, lat : 47.7975, lon : 11.07},
   'Insbruck' : {id : 11120, lat : 47.2692, lon : 11.40},
   'Bern' : {id : 6610, lat : 46.9480, lon : 7.45},
+  'Lyon' : {id : null, lat : 45.7640, lon : 4.84},
   'Udine' : {id : 16045, lat : 46.0713, lon : 13.24},
   'Zagreb' : {id : 14240, lat : 45.8150, lon : 15.98},
   'Milan' : {id : 16064, lat : 45.4642, lon : 9.19},
@@ -420,6 +522,7 @@ const soundingStations = {
   'Cuneo' : {id : 16113, lat : 44.3843, lon : 7.55},
   'Zadar' : {id : 14430, lat : 44.1194, lon : 15.23},
   'Montpellier' : {id : 7645, lat : 43.6119, lon : 3.88},
+  'Toulouse' : {id : null, lat : 43.6047, lon : 1.44},
   'Barcelona' : {id : 8190, lat : 41.3851, lon : 2.16},
   'Ajaccio' : {id : 7761, lat : 41.9192, lon : 8.74},
   'Rome' : {id : 16245, lat : 41.9028, lon : 12.50},
@@ -433,7 +536,31 @@ const soundingStations = {
   'Cyprus' : {id : 17607, lat : 35.1264, lon : 33.40},
   'Palestine' : {id : 40179, lat : 32.0853, lon : 34.81},
   'Cairo' : {id : 62378, lat : 30.0444, lon : 31.24},
+  'Omaha (NE)' : {id : null, lat : 41.2565, lon : -95.94},
+  'Dodge City (KS)' : {id : null, lat : 37.7528, lon : -100.02},
+  'Norman (OK)' : {id : null, lat : 35.2226, lon : -97.44},
+  'Dallas (TX)' : {id : null, lat : 32.7767, lon : -96.80},
+  'Miami (FL)' : {id : null, lat : 25.7617, lon : -80.19},
+  'Buenos Aires' : {id : null, lat : -34.6037, lon : -58.38},
+  'Darwin' : {id : null, lat : -12.4634, lon : 130.84},
+  'Tokyo' : {id : null, lat : 35.6762, lon : 139.65},
 };
+
+// The location the home-screen sounding is loaded for: {key, label, lat, lon, id}. `key` is its entry in
+// soundingStations (custom cities are registered there by setSoundingLocation()).
+var soundingLocation = null;
+
+// Inline SVG icon from the sprite defined in index.html (<symbol id="i-NAME">), as an element.
+function svgIcon(name)
+{
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'icon');
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', '#i-' + name);
+  svg.appendChild(use);
+  return svg;
+}
 
 // Great-circle distance in km between two lat/lon points (haversine formula).
 function haversineDistanceKm(lat1, lon1, lat2, lon2)
@@ -445,35 +572,59 @@ function haversineDistanceKm(lat1, lon1, lat2, lon2)
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-// Real radiosonde soundings only exist at a sparse set of fixed launch sites worldwide (soundingStations
-// above), so an arbitrary searched city can't have its own directly-observed profile. Returns the `count`
-// closest ones sorted by distance, so the caller (findRealSoundingForCity()) can try them in order and
-// use the first one that actually has a real archived observation for the requested date/hour.
-function findNearestStations(lat, lon, count)
+function formatLatLon(lat, lon) { return Math.abs(lat).toFixed(1) + '°' + (lat >= 0 ? 'N' : 'S') + ' ' + Math.abs(lon).toFixed(1) + '°' + (lon >= 0 ? 'E' : 'O'); }
+
+// Makes `loc` the active sounding location and (re)loads its sounding. A location that isn't one of the
+// quick-pick stations is registered in soundingStations as the single custom entry, so the in-game switcher
+// can reload it later at another date/hour.
+function setSoundingLocation(loc)
 {
-  return Object.entries(soundingStations)
-      .map(([key, station]) => ({key, distanceKm : haversineDistanceKm(lat, lon, station.lat, station.lon)}))
-      .sort((a, b) => a.distanceKm - b.distanceKm)
-      .slice(0, count);
+  if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lon))
+    return;
+
+  let key = loc.key;
+  if (!key || !soundingStations[key]) {
+    for (const [k, v] of Object.entries(soundingStations))
+      if (v.custom)
+        delete soundingStations[k];
+    key = loc.label;
+    soundingStations[key] = {id : null, lat : loc.lat, lon : loc.lon, custom : true};
+  }
+
+  soundingLocation = {key, label : loc.label || key, lat : loc.lat, lon : loc.lon, id : soundingStations[key].id};
+  startLatitude = loc.lat; // used directly for solar-angle/day-length physics
+
+  if (stationSelector)
+    stationSelector.value = soundingStations[key].custom ? '' : key;
+
+  const searchInput = document.getElementById('stationSearchInput');
+  if (searchInput && document.activeElement !== searchInput)
+    searchInput.value = soundingStations[key].custom ? loc.label : '';
+
+  prepareSounding();
 }
 
 function createStationSelect()
 {
   let select = document.getElementById('stationSelect');
 
+  const customOption = document.createElement('option');
+  customOption.value = '';
+  customOption.textContent = 'Ville recherchée';
+  customOption.disabled = true;
+  select.appendChild(customOption);
+
   for (const [key, value] of Object.entries(soundingStations)) {
     let option = document.createElement('option');
-    option.value = value.id;
-    option.dataset.key = key; // looked up later (prepareSounding()) to keep guiControls.activeSoundingStation in sync
-    option.innerHTML = key + ' ' + value.lat.toFixed(1) + '° N';
+    option.value = key;
+    option.textContent = key + ' — ' + formatLatLon(value.lat, value.lon) + (value.id ? ' · radiosondage' : '');
     select.appendChild(option);
   }
-  select.value = 10868;
 
   select.onchange = function() {
-    geocodedCity = null; // picking a preset station directly always overrides any active custom-location search
-    startLatitude = Object.values(soundingStations)[select.selectedIndex].lat;
-    prepareSounding();
+    const key = select.value;
+    if (soundingStations[key])
+      setSoundingLocation(Object.assign({key, label : key}, soundingStations[key]));
   };
 
   let datePicker = document.getElementById('datePicker');
@@ -485,220 +636,214 @@ function createStationSelect()
   return select;
 }
 
-// Set by the global city search (see selectGeocodedCity() below): while non-null, prepareSounding()
-// looks up the closest REAL station that actually has archived data for this exact lat/lon (see
-// findRealSoundingForCity()) instead of loading the preset <select>'s own station. Persists across
-// date/hour changes -- it's cleared only when the user picks a preset station directly
-// (createStationSelect()'s onchange), so re-running prepareSounding() for a new date on the same searched
-// city still targets that same exact point.
-var geocodedCity = null; // {lat, lon, label}
-
-// The real-world date/hour (epoch seconds) last configured on the setup screen. The running sim has no
-// live real-world calendar of its own (simDateTime just tracks month/day-of-year from year 2000 for solar
-// angle purposes). Used ONLY to seed guiControls.soundingDate/soundingHour once when the in-game dat.GUI
-// controls are built (see setupDatGui()'s fluidParams_folder) -- from then on, in-game station switching
-// (loadStationForForcing(), via getInGameSoundingEpochTime()) reads only those two guiControls properties,
-// never this variable again.
+// The real-world date/hour (epoch seconds) last configured on the setup screen. Used ONLY to seed
+// guiControls.soundingDate/soundingHour once when the in-game controls are built (see setupDatGui()).
 var lastSoundingEpochTime = null;
 
-// City search for the sounding station picker: sits alongside the existing <select id="stationSelect">
-// (never replaces it) and layers two lookup paths on top of it as the user types --
-//  1) an instant, local, offline filter of that dropdown's own preset stations, with auto-load as soon
-//     as the typed text exactly matches one of their names (case-insensitive);
-//  2) a debounced global geocoding lookup (OpenStreetMap Nominatim) so ANY real city/commune can be
-//     searched, not just the ~50 preset radiosonde launch sites -- picking one of those results loads the
-//     nearest real station's actual archived data (see findRealSoundingForCity()), never a fabricated one.
+// Worldwide place search: Open-Meteo geocoding (GeoNames, fast, city-oriented, CORS-enabled), falling back to
+// OpenStreetMap Nominatim for small places it doesn't know. Resolves to [{name, region, country, lat, lon}].
+async function geocodePlaces(query, signal)
+{
+  const results = [];
+  try {
+    const resp = await fetch('https://geocoding-api.open-meteo.com/v1/search?count=8&language=fr&format=json&name=' + encodeURIComponent(query), {signal});
+    if (resp.ok) {
+      const json = await resp.json();
+      for (const r of (json.results || []))
+        results.push({name : r.name, region : r.admin1 || '', country : r.country || r.country_code || '', lat : r.latitude, lon : r.longitude});
+    }
+  } catch (err) {
+    if (err.name === 'AbortError')
+      throw err;
+    console.warn('Géocodage Open-Meteo indisponible:', err);
+  }
+
+  if (results.length > 0)
+    return results;
+
+  const resp = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=8&accept-language=fr&q=' + encodeURIComponent(query), {signal});
+  if (!resp.ok)
+    throw new Error('HTTP ' + resp.status);
+  for (const r of await resp.json()) {
+    const a = r.address || {};
+    results.push({name : a.city || a.town || a.village || a.municipality || a.county || r.display_name.split(',')[0], region : a.state || '', country : a.country || '', lat : parseFloat(r.lat), lon : parseFloat(r.lon)});
+  }
+  return results;
+}
+
+// Home-screen search box: instant matches among the quick-pick stations, plus a debounced worldwide
+// geocoding lookup so ANY city or village can be picked. Arrow keys + Enter navigate the suggestions.
 function setupStationSearch()
 {
   const searchInput = document.getElementById('stationSearchInput');
-  const dataList = document.getElementById('stationSearchList');
   const suggestionsEl = document.getElementById('citySearchResults');
 
-  if (!searchInput || !dataList || !stationSelector)
+  if (!searchInput || !suggestionsEl)
     return;
 
-  for (const name of Object.keys(soundingStations)) {
-    const option = document.createElement('option');
-    option.value = name;
-    dataList.appendChild(option);
-  }
-
-  function selectStationByName(name)
-  {
-    const key = Object.keys(soundingStations).find(k => k.toLowerCase() === name.toLowerCase());
-    if (!key)
-      return false;
-
-    stationSelector.value = soundingStations[key].id;
-    stationSelector.dispatchEvent(new Event('change', {bubbles : true})); // reuses the existing onchange: clears geocodedCity, sets startLatitude, calls prepareSounding()
-    return true;
-  }
+  let items = [];       // [{label, sub, loc}] currently rendered
+  let activeIndex = -1; // keyboard-highlighted suggestion
 
   function hideSuggestions()
   {
-    if (suggestionsEl) {
-      suggestionsEl.innerHTML = '';
-      suggestionsEl.hidden = true;
-    }
+    suggestionsEl.innerHTML = '';
+    suggestionsEl.hidden = true;
+    items = [];
+    activeIndex = -1;
   }
 
-  function selectGeocodedCity(result)
+  function choose(item)
   {
     hideSuggestions();
-
-    const lat = parseFloat(result.lat);
-    const lon = parseFloat(result.lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon))
-      return;
-
-    const address = result.address || {};
-    const cityName = address.city || address.town || address.village || address.municipality || address.county || result.display_name.split(',')[0];
-    const country = address.country || '';
-    const fullLabel = country ? cityName + ', ' + country : cityName;
-
-    searchInput.value = fullLabel;
-    for (const option of stationSelector.options) option.hidden = false; // clear any leftover local-filter narrowing
-
-    geocodedCity = {lat, lon, label : fullLabel};
-    startLatitude = lat; // the searched city's own real latitude, used directly for solar-angle/day-length physics
-
-    prepareSounding();
+    searchInput.value = item.label;
+    searchInput.blur();
+    setSoundingLocation(item.loc);
   }
 
-  function renderEmptyMessage(text)
+  function render(message)
   {
     suggestionsEl.innerHTML = '';
-    const empty = document.createElement('div');
-    empty.className = 'city-suggestion city-suggestion-empty';
-    empty.textContent = text; // textContent, not innerHTML: this may echo back the user's own typed query
-    suggestionsEl.appendChild(empty);
-    suggestionsEl.hidden = false;
-  }
-
-  function renderSuggestions(results, query)
-  {
-    if (!suggestionsEl)
-      return;
-
-    if (!results || results.length === 0) {
-      renderEmptyMessage('Aucune ville trouvée pour "' + query + '"');
-      return;
-    }
-
-    suggestionsEl.innerHTML = '';
-
-    const seenLabels = new Set(); // Nominatim can return the same place twice (e.g. the city node and its administrative boundary)
-
-    for (const result of results) {
-      const address = result.address || {};
-      const cityName = address.city || address.town || address.village || address.municipality || address.county || result.display_name.split(',')[0];
-      const country = address.country || '';
-      const label = cityName + '|' + country;
-
-      if (seenLabels.has(label))
-        continue;
-      seenLabels.add(label);
-
-      const item = document.createElement('div');
-      item.className = 'city-suggestion';
-
+    items.forEach((item, index) => {
+      const el = document.createElement('div');
+      el.className = 'city-suggestion' + (index === activeIndex ? ' active' : '');
+      el.appendChild(svgIcon(item.icon || 'pin'));
       const nameEl = document.createElement('span');
       nameEl.className = 'city-suggestion-name';
-      nameEl.textContent = cityName; // textContent: city/country names come from an external API response, never trusted as markup
-      item.appendChild(nameEl);
-
-      if (country) {
-        const countryEl = document.createElement('span');
-        countryEl.className = 'city-suggestion-country';
-        countryEl.textContent = country;
-        item.appendChild(countryEl);
-      }
-
-      item.addEventListener('mousedown', function(event) {
-        event.preventDefault(); // keep focus on the input so 'blur' doesn't hide the list before the click registers
-        selectGeocodedCity(result);
+      nameEl.textContent = item.label; // textContent: names come from an external API, never trusted as markup
+      const subEl = document.createElement('span');
+      subEl.className = 'city-suggestion-country';
+      subEl.textContent = item.sub;
+      el.appendChild(nameEl);
+      el.appendChild(subEl);
+      el.addEventListener('mousedown', event => {
+        event.preventDefault(); // keep focus so 'blur' doesn't hide the list before the click registers
+        choose(item);
       });
-      suggestionsEl.appendChild(item);
+      suggestionsEl.appendChild(el);
+    });
+    if (message) {
+      const el = document.createElement('div');
+      el.className = 'city-suggestion city-suggestion-empty';
+      el.textContent = message;
+      suggestionsEl.appendChild(el);
     }
-
-    if (suggestionsEl.children.length === 0) {
-      renderEmptyMessage('Aucune ville trouvée pour "' + query + '"');
-      return;
-    }
-
-    suggestionsEl.hidden = false;
+    suggestionsEl.hidden = suggestionsEl.children.length === 0;
   }
 
-  let geocodeAbortController = null;
-  let geocodeDebounceTimer = null;
-
-  async function fetchCitySuggestions(query)
+  function localMatches(queryLower)
   {
-    if (geocodeAbortController)
-      geocodeAbortController.abort();
-    geocodeAbortController = new AbortController();
+    return Object.entries(soundingStations)
+        .filter(([key, v]) => !v.custom && key.toLowerCase().includes(queryLower))
+        .slice(0, 4)
+        .map(([key, v]) => ({label : key, icon : v.id ? 'balloon' : 'star', sub : (v.id ? 'station de radiosondage · ' : 'favori · ') + formatLatLon(v.lat, v.lon), loc : Object.assign({key, label : key}, v)}));
+  }
 
-    if (suggestionsEl)
-      renderEmptyMessage('Recherche de "' + query + '"...');
+  let abortController = null;
+  let debounceTimer = null;
+
+  async function searchWorldwide(query, local)
+  {
+    if (abortController)
+      abortController.abort();
+    abortController = new AbortController();
 
     try {
-      const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=8&q=' + encodeURIComponent(query);
-      const resp = await fetch(url, {signal : geocodeAbortController.signal});
-
-      if (!resp.ok)
-        throw new Error('HTTP ' + resp.status);
-
-      const results = await resp.json();
-      renderSuggestions(results, query);
+      const places = await geocodePlaces(query, abortController.signal);
+      const seen = new Set();
+      const remote = [];
+      for (const p of places) {
+        const id = p.name + '|' + p.region + '|' + p.country;
+        if (seen.has(id) || !Number.isFinite(p.lat) || !Number.isFinite(p.lon))
+          continue;
+        if (local.some(i => haversineDistanceKm(i.loc.lat, i.loc.lon, p.lat, p.lon) < 15))
+          continue; // same place as a favorite already listed
+        seen.add(id);
+        remote.push({label : p.name, icon : 'pin', sub : [ p.region, p.country ].filter(Boolean).join(', '), loc : {label : p.country ? p.name + ', ' + p.country : p.name, lat : p.lat, lon : p.lon}});
+      }
+      items = local.concat(remote);
+      activeIndex = items.length > 0 ? 0 : -1;
+      render(items.length === 0 ? 'Aucun lieu trouvé pour « ' + query + ' »' : null);
     } catch (err) {
       if (err.name === 'AbortError')
-        return; // superseded by a newer keystroke, not a real failure
-
-      console.error('Erreur recherche de ville (Nominatim):', err);
-      if (suggestionsEl)
-        renderEmptyMessage('Recherche indisponible (hors ligne ?)');
+        return; // superseded by a newer keystroke
+      console.error('Erreur recherche de ville:', err);
+      render('Recherche indisponible (hors ligne ?)');
     }
   }
 
   searchInput.addEventListener('input', function() {
     const query = searchInput.value.trim();
-    const queryLower = query.toLowerCase();
+    clearTimeout(debounceTimer);
 
-    // Options stay in the DOM (never removed) so index-based lookups elsewhere (stationSelector.onchange
-    // uses select.selectedIndex against Object.values(soundingStations)) keep working unchanged.
-    for (const option of stationSelector.options) {
-      const stationName = option.textContent.toLowerCase();
-      option.hidden = queryLower.length > 0 && !stationName.includes(queryLower);
-    }
-
-    if (queryLower.length > 0)
-      selectStationByName(queryLower); // auto-load once the typed text exactly matches one of the presets
-
-    clearTimeout(geocodeDebounceTimer);
-    if (query.length < 3) {
+    if (query.length === 0) {
       hideSuggestions();
       return;
     }
-    geocodeDebounceTimer = setTimeout(() => fetchCitySuggestions(query), 500); // debounced: Nominatim asks not to be hammered on every keystroke
+
+    const local = localMatches(query.toLowerCase());
+    items = local;
+    activeIndex = local.length > 0 ? 0 : -1;
+    render(query.length >= 2 ? 'Recherche dans le monde entier…' : null);
+
+    if (query.length >= 2)
+      debounceTimer = setTimeout(() => searchWorldwide(query, local), 300);
   });
 
-  searchInput.addEventListener('change', function() { selectStationByName(searchInput.value.trim()); });
+  searchInput.addEventListener('keydown', function(event) {
+    if (suggestionsEl.hidden || items.length === 0)
+      return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      activeIndex = (activeIndex + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      render();
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      if (activeIndex >= 0)
+        choose(items[activeIndex]);
+    } else if (event.key === 'Escape') {
+      hideSuggestions();
+    }
+  });
 
   searchInput.addEventListener('blur', function() { setTimeout(hideSuggestions, 150); }); // slight delay so a suggestion's mousedown still fires first
-
-  searchInput.addEventListener('focus', function() {
-    if (suggestionsEl && suggestionsEl.innerHTML !== '')
-      suggestionsEl.hidden = false;
-  });
 }
 
+function setupSoundingDateControls()
+{
+  const datePicker = document.getElementById('datePicker');
+  const hourSelector = document.getElementById('hourSelector');
+
+  const todayIso = d => d.toISOString().slice(0, 10);
+  const maxDate = new Date(Date.now() + SOUNDING_MAX_FORECAST_DAYS * 86400 * 1000);
+  datePicker.max = todayIso(maxDate);
+
+  // Start on today's sounding (or a forecast for later today) rather than an arbitrary fixed date.
+  datePicker.value = todayIso(new Date());
+
+  for (const btn of document.querySelectorAll('[data-day-offset]')) {
+    btn.addEventListener('click', function() {
+      datePicker.value = todayIso(new Date(Date.now() + parseInt(btn.dataset.dayOffset, 10) * 86400 * 1000));
+      startDate = new Date(datePicker.value);
+      prepareSounding();
+    });
+  }
+
+  hourSelector.addEventListener('change', prepareSounding);
+
+  const applyCheckbox = document.getElementById('applySoundingAtStart');
+  if (applyCheckbox) {
+    applyCheckbox.checked = applySoundingAtStart;
+    applyCheckbox.addEventListener('change', () => { applySoundingAtStart = applyCheckbox.checked; });
+  }
+}
 
 // Ensure the DOM is fully loaded before running the function
 document.addEventListener('DOMContentLoaded', () => {
   createPresetSelect();
   stationSelector = createStationSelect();
   setupStationSearch();
-  prepareSounding();
+  setupSoundingDateControls();
+  setSoundingLocation({key : 'Munich', label : 'Munich', lat : soundingStations['Munich'].lat, lon : soundingStations['Munich'].lon});
 
   const pendingGridResY = localStorage.getItem('pendingGridResY');
   if (pendingGridResY) {
@@ -707,7 +852,6 @@ document.addEventListener('DOMContentLoaded', () => {
     updateSetupSliders();
   }
 });
-
 
 var canvas;
 var gl;
@@ -829,7 +973,8 @@ const guiControls_default = {
   showStationMarkers : true, // real Meteociel radiosonde station pins overlaid on the main view, click to load that station's real sounding for the live Sounding Forcing
   activeSoundingStation : 'Munich', // matches createStationSelect()'s own default (id 10868) on the setup screen
   soundingDate : '2025-06-15',      // in-game Sounding Date (YYYY-MM-DD); re-seeded from the setup screen's own date once mainScript() starts -- see setupDatGui()
-  soundingHour : 12,                // in-game Sounding Hour: 0 or 12 (00Z/12Z), the only real synoptic launch times
+  soundingHour : 12,                // in-game Sounding Hour (UTC, 0-23)
+  windCeilingAlt : 8000,            // meters. Above this altitude the wind (global wind force + sounding wind) fades smoothly to 0 at the top of the map
 };
 
 var horizontalDisplayMult = 3.0; // 3.0 to cover srceen while zoomed out
@@ -2243,80 +2388,121 @@ function drawWindBarb(ctx, x, y, speedKmh, angleDeg, color)
   }
 }
 
-// Draws the setup-screen technical émagramme onto #soundingCanvas from a REAL sounding table: skew
-// isotherms, altitude gridlines, environment T/Td curves, the lifted parcel path with CAPE (red) / CIN
-// (blue) shading between it and the environment, wind barbs, a small hodograph inset, and the numeric
-// CAPE/CIN/LCL/shear/STP readout. Shown alongside the official Meteociel image, not instead of it.
+// Wind speed (km/h) -> color, shared by the barbs and the hodograph so the two read together.
+function windSpeedColor(speedKmh)
+{
+  const stops = [[0, '#9fb3c8'], [20, '#5ad1ff'], [45, '#6bdc7c'], [70, '#ffd36b'], [100, '#ff9050'], [140, '#ff4d6d'], [200, '#d36bff']];
+  for (let i = stops.length - 1; i >= 0; i--)
+    if (speedKmh >= stops[i][0])
+      return stops[i][1];
+  return stops[0][1];
+}
+
+// Draws the setup-screen émagramme onto #soundingCanvas from a sounding table: skewed isotherms, dry
+// adiabats, the -10/-30 °C hail-growth band, environment T/Td curves, the lifted parcel with CAPE (red) /
+// CIN (blue) shading, LCL / LFC / EL / 0 °C markers, pressure labels, speed-colored wind barbs, a hodograph
+// colored by height, a legend, and a hover readout. Returns the computed indices.
 function drawSetupEmagram(table)
 {
   const canvas = document.getElementById('soundingCanvas');
   if (!canvas || !table || table.length < 2)
-    return;
+    return null;
 
-  // Match the canvas's drawing-buffer resolution to its actual CSS-rendered size so it stays crisp and
-  // fills whatever width the layout gives it, instead of stretching a fixed-resolution raster.
-  const cssWidth = canvas.clientWidth || 620;
-  canvas.width = cssWidth;
-  const width = canvas.width, height = canvas.height;
+  // Draw at the device's pixel density so lines and text stay crisp on high-DPI screens.
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth || 620, height = canvas.clientHeight || 480;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
 
   const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = '#00000055';
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  const bg = ctx.createLinearGradient(0, 0, 0, height);
+  bg.addColorStop(0, 'rgba(8, 14, 30, 0.85)');
+  bg.addColorStop(1, 'rgba(20, 34, 60, 0.75)');
+  ctx.fillStyle = bg;
   ctx.fillRect(0, 0, width, height);
 
-  const marginBottom = 34, marginRight = 60;
-  const graphWidth = width - marginRight, graphHeight = height - marginBottom;
-  const maxAlt = 16000; // caps the view to the troposphere/lower stratosphere where CAPE/CIN/LCL actually live
+  const marginLeft = 54, marginBottom = 30, marginRight = 68, marginTop = 8;
+  const graphLeft = marginLeft, graphRight = width - marginRight, graphBottom = height - marginBottom;
+  const graphWidth = graphRight - graphLeft, graphHeight = graphBottom - marginTop;
+  const maxAlt = 16000; // troposphere + lower stratosphere, where CAPE/CIN/LCL actually live
 
-  const T_to_X = (T, screenY) => (T * 0.0115 + 1.18 - (screenY / graphHeight) * 0.8) * graphWidth;
-  const alt_to_Y = (alt) => clamp(map_range(alt, maxAlt, 0, 0, graphHeight), 0, graphHeight);
+  const alt_to_Y = (alt) => marginTop + clamp(map_range(alt, maxAlt, 0, 0, graphHeight), 0, graphHeight);
+  // Skew-T: isotherms lean right with height
+  const T_to_X = (T, screenY) => graphLeft + (T * 0.0115 + 1.18 - ((screenY - marginTop) / graphHeight) * 0.8) * graphWidth;
 
-  // Isotherms
-  ctx.strokeStyle = '#964B00';
-  ctx.lineWidth = 1.0;
-  ctx.font = '12px Arial';
-  ctx.fillStyle = 'white';
+  ctx.save();
   ctx.beginPath();
-  for (let T = -80.0; T <= 50.0; T += 10.0) {
-    ctx.moveTo(T_to_X(T, graphHeight), graphHeight);
-    ctx.lineTo(T_to_X(T, 0), 0);
-    if (T >= -30.0)
-      ctx.fillText(printTemp(Math.round(T)), T_to_X(T, graphHeight) - 18, height - 8);
-  }
-  ctx.stroke();
-  ctx.strokeStyle = '#CC8844'; // 0C line, thicker
-  ctx.lineWidth = 2.0;
-  ctx.beginPath();
-  ctx.moveTo(T_to_X(0, graphHeight), graphHeight);
-  ctx.lineTo(T_to_X(0, 0), 0);
-  ctx.stroke();
-
-  // Altitude gridlines
-  ctx.strokeStyle = '#FFFFFF22';
-  ctx.lineWidth = 1.0;
-  ctx.fillStyle = '#FFFFFFAA';
-  for (let alt = 0; alt <= maxAlt; alt += 2000) {
-    const y = alt_to_Y(alt);
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(graphWidth, y);
-    ctx.stroke();
-    ctx.fillText(printAltitude(alt), 4, y - 3);
-  }
+  ctx.rect(graphLeft, marginTop, graphWidth, graphHeight);
+  ctx.clip();
 
   const indices = computeSoundingIndicesFromTable(table);
+  const surfaceAlt = table[table.length - 1].alt;
 
-  // CAPE (red) / CIN (blue) shading between the parcel path and the environment, layer by layer. Looks
-  // the environment row up by altitude (rather than assuming parcelPath[i] lines up positionally with
-  // table[length-1-i]) since the parcel loop can skip or stop short of the raw table -- it breaks once it
-  // reaches guiControls_default.simHeight, and skips the raw table's known near-top non-monotonic quirk.
+  // Hail growth zone: between the -10 °C and -30 °C environmental isotherms
+  const altAtTemp = (targetT) => {
+    for (let i = table.length - 1; i > 0; i--) {
+      const lo = table[i], hi = table[i - 1];
+      if ((lo.t - targetT) * (hi.t - targetT) <= 0 && lo.t !== hi.t)
+        return lo.alt + (hi.alt - lo.alt) * (lo.t - targetT) / (lo.t - hi.t);
+    }
+    return null;
+  };
+  const hailBottom = altAtTemp(-10), hailTop = altAtTemp(-30), freezingAlt = altAtTemp(0);
+  if (hailBottom !== null && hailTop !== null) {
+    ctx.fillStyle = 'rgba(160, 220, 255, 0.06)';
+    ctx.fillRect(graphLeft, alt_to_Y(hailTop), graphWidth, alt_to_Y(hailBottom) - alt_to_Y(hailTop));
+  }
+
+  // Altitude gridlines
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.07)';
+  ctx.lineWidth = 1;
+  for (let alt = 0; alt <= maxAlt; alt += 1000) {
+    const y = alt_to_Y(alt);
+    ctx.beginPath();
+    ctx.moveTo(graphLeft, y);
+    ctx.lineTo(graphRight, y);
+    ctx.stroke();
+  }
+
+  // Dry adiabats (θ constant): faint dashed green
+  ctx.strokeStyle = 'rgba(120, 200, 140, 0.16)';
+  ctx.setLineDash([ 4, 5 ]);
+  for (let T0 = -40; T0 <= 120; T0 += 10) {
+    ctx.beginPath();
+    for (let alt = 0; alt <= maxAlt; alt += 500) {
+      const y = alt_to_Y(alt), x = T_to_X(T0 - guiControls_default.dryLapseRate * alt / 1000, y);
+      if (alt === 0)
+        ctx.moveTo(x, y);
+      else
+        ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Isotherms
+  ctx.lineWidth = 1;
+  for (let T = -100; T <= 50; T += 10) {
+    ctx.strokeStyle = T === 0 ? 'rgba(90, 190, 255, 0.55)' : 'rgba(200, 150, 90, 0.18)';
+    ctx.lineWidth = T === 0 ? 1.6 : 1;
+    ctx.beginPath();
+    ctx.moveTo(T_to_X(T, graphBottom), graphBottom);
+    ctx.lineTo(T_to_X(T, marginTop), marginTop);
+    ctx.stroke();
+  }
+
+  // CAPE (red) / CIN (blue) shading between the parcel path and the environment, layer by layer
   for (let i = 1; i < indices.parcelPath.length; i++) {
     const prevParcel = indices.parcelPath[i - 1], curParcel = indices.parcelPath[i];
     const envRow = interpolateTableAtAltitude(table, curParcel.alt);
     const prevEnvRow = interpolateTableAtAltitude(table, prevParcel.alt);
 
-    const buoyant = curParcel.t > envRow.t;
-    ctx.fillStyle = buoyant ? 'rgba(255, 60, 60, 0.28)' : 'rgba(60, 120, 255, 0.22)';
+    ctx.fillStyle = curParcel.t > envRow.t ? 'rgba(255, 70, 90, 0.30)' : 'rgba(70, 130, 255, 0.22)';
 
     const y1 = alt_to_Y(prevParcel.alt), y2 = alt_to_Y(curParcel.alt);
     ctx.beginPath();
@@ -2328,109 +2514,249 @@ function drawSetupEmagram(table)
     ctx.fill();
   }
 
-  // Environment temperature curve
-  ctx.strokeStyle = '#FF0000';
-  ctx.lineWidth = 2.0;
-  ctx.beginPath();
-  for (let i = table.length - 1; i >= 0; i--) {
-    const y = alt_to_Y(table[i].alt);
-    if (i == table.length - 1)
-      ctx.moveTo(T_to_X(table[i].t, y), y);
-    else
-      ctx.lineTo(T_to_X(table[i].t, y), y);
-  }
-  ctx.stroke();
+  const drawCurve = (key, color, glow) => {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.6;
+    ctx.shadowColor = glow;
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    for (let i = table.length - 1; i >= 0; i--) {
+      if (table[i].alt > maxAlt + 2000)
+        break;
+      const y = alt_to_Y(table[i].alt);
+      if (i == table.length - 1)
+        ctx.moveTo(T_to_X(table[i][key], y), y);
+      else
+        ctx.lineTo(T_to_X(table[i][key], y), y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  };
+  drawCurve('td', '#3d8bff', 'rgba(61, 139, 255, 0.8)');
+  drawCurve('t', '#ff4d5e', 'rgba(255, 77, 94, 0.8)');
 
-  // Environment dewpoint curve
-  ctx.strokeStyle = '#0055FF';
-  ctx.lineWidth = 2.0;
-  ctx.beginPath();
-  for (let i = table.length - 1; i >= 0; i--) {
-    const y = alt_to_Y(table[i].alt);
-    if (i == table.length - 1)
-      ctx.moveTo(T_to_X(table[i].td, y), y);
-    else
-      ctx.lineTo(T_to_X(table[i].td, y), y);
-  }
-  ctx.stroke();
-
-  // Parcel path (dry adiabat in dark green, saturated/moist adiabat in bright green)
-  ctx.lineWidth = 2.0;
+  // Parcel path: dry part dashed, saturated part solid
+  ctx.lineWidth = 2;
   for (let i = 1; i < indices.parcelPath.length; i++) {
     const a = indices.parcelPath[i - 1], b = indices.parcelPath[i];
-    ctx.strokeStyle = b.saturated ? '#00FF00' : '#008800';
+    ctx.strokeStyle = b.saturated ? '#7dff8a' : '#3fbf55';
+    ctx.setLineDash(b.saturated ? [] : [ 6, 4 ]);
     ctx.beginPath();
     ctx.moveTo(T_to_X(a.t, alt_to_Y(a.alt)), alt_to_Y(a.alt));
     ctx.lineTo(T_to_X(b.t, alt_to_Y(b.alt)), alt_to_Y(b.alt));
     ctx.stroke();
   }
+  ctx.setLineDash([]);
 
-  // Wind barbs along the right margin
-  for (let i = table.length - 1; i >= 0; i--) {
-    const row = table[i];
-    if (row.alt > maxAlt)
+  // LFC / EL from the parcel path
+  let LFC = null, EL = null;
+  for (let i = 1; i < indices.parcelPath.length; i++) {
+    const p = indices.parcelPath[i];
+    const buoyant = p.t > interpolateTableAtAltitude(table, p.alt).t;
+    if (buoyant && LFC === null && p.saturated)
+      LFC = p.alt;
+    if (buoyant)
+      EL = p.alt;
+  }
+  if (LFC === null)
+    EL = null;
+
+  // Level markers
+  const markers = [
+    {alt : indices.LCL_height, label : 'LCL', color : '#7dff8a', show : indices.LCL_height < maxAlt},
+    {alt : LFC, label : 'LFC', color : '#ffd36b', show : LFC !== null},
+    {alt : EL, label : 'EL', color : '#ff8fa0', show : EL !== null && EL > (LFC || 0) + 300},
+    {alt : freezingAlt, label : '0 °C', color : '#5abeff', show : freezingAlt !== null},
+  ];
+  ctx.font = '600 11px Inter, Arial, sans-serif';
+  const placedLabels = []; // {y, right}: labels of nearby levels (e.g. LCL and LFC) are put side by side instead of on top of each other
+  for (const m of markers) {
+    if (!m.show)
+      continue;
+    const y = alt_to_Y(m.alt);
+    let labelX = graphLeft + 74;
+    for (const placed of placedLabels)
+      if (Math.abs(placed.y - y) < 12)
+        labelX = Math.max(labelX, placed.right + 8);
+    placedLabels.push({y, right : labelX + ctx.measureText(m.label).width});
+    ctx.strokeStyle = m.color;
+    ctx.globalAlpha = 0.7;
+    ctx.setLineDash([ 2, 4 ]);
+    ctx.beginPath();
+    ctx.moveTo(graphLeft, y);
+    ctx.lineTo(graphLeft + 70, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = m.color;
+    ctx.fillText(m.label, labelX, y + 4);
+  }
+
+  if (hailBottom !== null && hailTop !== null) {
+    ctx.fillStyle = 'rgba(160, 220, 255, 0.45)';
+    ctx.font = '10px Inter, Arial, sans-serif';
+    ctx.fillText('zone de croissance de la grêle', graphLeft + 6, alt_to_Y(hailTop) + 12);
+  }
+
+  ctx.restore(); // end clip
+
+  // Axes labels: altitude (left), temperature (bottom), pressure (right of the graph)
+  ctx.font = '11px Inter, Arial, sans-serif';
+  ctx.fillStyle = 'rgba(226, 236, 255, 0.6)';
+  ctx.textAlign = 'right';
+  for (let alt = 0; alt <= maxAlt; alt += 2000)
+    ctx.fillText((alt / 1000) + ' km', graphLeft - 8, alt_to_Y(alt) + 4);
+  ctx.textAlign = 'center';
+  for (let T = -40; T <= 40; T += 10) {
+    const x = T_to_X(T, graphBottom);
+    if (x > graphLeft + 10 && x < graphRight - 10)
+      ctx.fillText(printTemp(T), x, height - 10);
+  }
+  ctx.textAlign = 'right';
+  for (const p of [ 850, 700, 500, 300, 200 ]) { // inside the plot's right edge, below the hodograph inset
+    const row = table.find(r => r.p === p);
+    if (!row || row.alt > maxAlt)
       continue;
     const y = alt_to_Y(row.alt);
-    drawWindBarb(ctx, graphWidth + 26, y, row.vel, row.angle, '#CCCCCC');
+    if (y < marginTop + 160)
+      continue;
+    ctx.fillStyle = 'rgba(226, 236, 255, 0.35)';
+    ctx.fillText(p + ' hPa', graphRight - 6, y - 3);
   }
+  ctx.textAlign = 'left';
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+  ctx.strokeRect(graphLeft + 0.5, marginTop + 0.5, graphWidth, graphHeight);
 
-  // Hodograph inset (top-right): u/v wind components by height, connected in altitude order
-  const hodoSize = 130, hodoX = width - hodoSize - 8, hodoY = 8, hodoR = hodoSize / 2 - 14;
-  const hodoCenterX = hodoX + hodoSize / 2, hodoCenterY = hodoY + hodoSize / 2;
-
-  ctx.fillStyle = '#00000088';
-  ctx.fillRect(hodoX, hodoY, hodoSize, hodoSize);
-  ctx.strokeStyle = '#FFFFFF33';
-  ctx.beginPath();
-  ctx.arc(hodoCenterX, hodoCenterY, hodoR, 0, Math.PI * 2);
-  ctx.moveTo(hodoX, hodoCenterY);
-  ctx.lineTo(hodoX + hodoSize, hodoCenterY);
-  ctx.moveTo(hodoCenterX, hodoY);
-  ctx.lineTo(hodoCenterX, hodoY + hodoSize);
-  ctx.stroke();
-
-  const maxSpeedForHodo = Math.max(...table.map(r => r.vel), 10);
-  ctx.strokeStyle = '#FFDD55';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
+  // Wind barbs, colored by speed, thinned so they never overlap
+  let lastBarbY = Infinity;
   for (let i = table.length - 1; i >= 0; i--) {
     const row = table[i];
     if (row.alt > maxAlt)
+      break;
+    const y = alt_to_Y(row.alt);
+    if (lastBarbY - y < 16)
       continue;
-    const scale = hodoR / maxSpeedForHodo;
-    const u = row.vel * Math.sin(row.angle * degToRad) * scale;
-    const v = row.vel * Math.cos(row.angle * degToRad) * scale;
-    const px = hodoCenterX + u, py = hodoCenterY - v;
-    if (i == table.length - 1)
-      ctx.moveTo(px, py);
-    else
-      ctx.lineTo(px, py);
+    lastBarbY = y;
+    drawWindBarb(ctx, graphRight + 36, y, row.vel, row.angle, windSpeedColor(row.vel));
   }
-  ctx.stroke();
-  ctx.fillStyle = '#FFDD55AA';
-  ctx.font = '10px Arial';
-  ctx.fillText('Hodographe', hodoX + 4, hodoY + hodoSize - 4);
 
-  // Numeric readout
-  ctx.font = '16px Arial';
-  ctx.fillStyle = 'yellow';
-  ctx.fillText('SBCAPE: ' + indices.CAPE.toFixed(0) + ' J/kg', 10, 20);
-  ctx.fillText('CIN: ' + indices.CIN.toFixed(0) + ' J/kg', 10, 40);
-  ctx.fillText('LCL: ' + printAltitude(indices.LCL_height), 10, 60);
-  ctx.fillText('Shear 0-6km: ' + printVelocity(indices.shear06), 10, 80);
-  ctx.fillStyle = indices.STP >= 1.0 ? '#FF4444' : 'yellow';
-  ctx.fillText('STP: ' + indices.STP.toFixed(2), 10, 100);
+  // Hodograph inset: u/v wind by height, colored by height band (0-3 km, 3-6 km, 6-9 km, 9 km+)
+  const hodoSize = 132, hodoX = graphRight - hodoSize - 6, hodoY = marginTop + 6, hodoR = hodoSize / 2 - 12;
+  const hcx = hodoX + hodoSize / 2, hcy = hodoY + hodoSize / 2;
+  ctx.fillStyle = 'rgba(6, 12, 24, 0.75)';
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+  ctx.beginPath();
+  ctx.roundRect ? ctx.roundRect(hodoX, hodoY, hodoSize, hodoSize, 10) : ctx.rect(hodoX, hodoY, hodoSize, hodoSize);
+  ctx.fill();
+  ctx.stroke();
+
+  const hodoRows = table.filter(r => r.alt - surfaceAlt <= 12000);
+  const maxSpeed = Math.max(...hodoRows.map(r => r.vel), 20);
+  const ringStep = maxSpeed > 120 ? 50 : 20;
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.10)';
+  ctx.fillStyle = 'rgba(226, 236, 255, 0.35)';
+  ctx.font = '9px Inter, Arial, sans-serif';
+  for (let s = ringStep; s <= maxSpeed; s += ringStep) {
+    const r = s / maxSpeed * hodoR;
+    ctx.beginPath();
+    ctx.arc(hcx, hcy, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillText(s, hcx + r * 0.7 + 2, hcy - r * 0.7);
+  }
+  ctx.beginPath();
+  ctx.moveTo(hcx - hodoR, hcy);
+  ctx.lineTo(hcx + hodoR, hcy);
+  ctx.moveTo(hcx, hcy - hodoR);
+  ctx.lineTo(hcx, hcy + hodoR);
+  ctx.stroke();
+
+  const hodoColors = [ '#ff4d6d', '#6bdc7c', '#ffd36b', '#5ad1ff' ];
+  ctx.lineWidth = 2;
+  for (let i = hodoRows.length - 1; i > 0; i--) {
+    const a = hodoRows[i], b = hodoRows[i - 1];
+    const pt = r => {
+      const k = hodoR / maxSpeed;
+      return [ hcx - r.vel * Math.sin(r.angle * degToRad) * k, hcy + r.vel * Math.cos(r.angle * degToRad) * k ]; // vector the wind blows TOWARD
+    };
+    const [x1, y1] = pt(a), [x2, y2] = pt(b);
+    ctx.strokeStyle = hodoColors[Math.min(Math.floor((b.alt - surfaceAlt) / 3000), 3)];
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+  ctx.fillStyle = 'rgba(226, 236, 255, 0.55)';
+  ctx.font = '600 9px Inter, Arial, sans-serif';
+  ctx.fillText('HODOGRAPHE km/h', hodoX + 8, hodoY + hodoSize - 7);
+
+  // Legend
+  const legend = [ [ '#ff4d5e', 'Température' ], [ '#3d8bff', 'Point de rosée' ], [ '#7dff8a', 'Particule' ] ];
+  ctx.font = '11px Inter, Arial, sans-serif';
+  let lx = graphLeft + 8;
+  const ly = graphBottom - 10;
+  for (const [color, label] of legend) {
+    ctx.fillStyle = color;
+    ctx.fillRect(lx, ly - 4, 14, 3);
+    ctx.fillStyle = 'rgba(226, 236, 255, 0.75)';
+    ctx.fillText(label, lx + 19, ly);
+    lx += 26 + ctx.measureText(label).width;
+  }
+
+  // Hover readout: keep what's needed on the canvas, attach the listener once
+  canvas.__emagram = {table, alt_to_Y, marginTop, graphHeight, graphLeft, graphRight, maxAlt, snapshot : ctx.getImageData(0, 0, canvas.width, canvas.height)}; // restored on every hover move
+  if (!canvas.__hoverAttached) {
+    canvas.__hoverAttached = true;
+    canvas.addEventListener('mouseleave', () => {
+      const e = canvas.__emagram;
+      if (e)
+        canvas.getContext('2d').putImageData(e.snapshot, 0, 0);
+    });
+    canvas.addEventListener('mousemove', event => {
+      const e = canvas.__emagram;
+      if (!e)
+        return;
+      const rect = canvas.getBoundingClientRect();
+      const mx = event.clientX - rect.left, my = event.clientY - rect.top;
+      const c = canvas.getContext('2d');
+      c.putImageData(e.snapshot, 0, 0);
+      if (my < e.marginTop || my > e.marginTop + e.graphHeight || mx < e.graphLeft || mx > e.graphRight)
+        return;
+      const alt = map_range(my - e.marginTop, 0, e.graphHeight, e.maxAlt, 0);
+      if (alt < e.table[e.table.length - 1].alt)
+        return;
+      const row = interpolateTableAtAltitude(e.table, alt);
+      const d = window.devicePixelRatio || 1;
+      c.setTransform(d, 0, 0, d, 0, 0);
+      c.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+      c.lineWidth = 1;
+      c.beginPath();
+      c.moveTo(e.graphLeft, my);
+      c.lineTo(e.graphRight, my);
+      c.stroke();
+      const lines = [ (alt / 1000).toFixed(1) + ' km · ' + Math.round(row.p) + ' hPa', 'T ' + printTemp(row.t) + '   Td ' + printTemp(row.td), 'Vent ' + Math.round(row.angle) + '° · ' + Math.round(row.vel) + ' km/h' ];
+      c.font = '12px Inter, Arial, sans-serif';
+      const w = Math.max(...lines.map(l => c.measureText(l).width)) + 16, h = lines.length * 16 + 10;
+      const bx = mx + w + 14 > e.graphRight ? mx - w - 10 : mx + 10, by = clamp(my - h - 8, e.marginTop, e.marginTop + e.graphHeight - h);
+      c.fillStyle = 'rgba(8, 14, 30, 0.92)';
+      c.fillRect(bx, by, w, h);
+      c.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+      c.strokeRect(bx + 0.5, by + 0.5, w, h);
+      c.fillStyle = '#ffffff';
+      lines.forEach((l, i) => c.fillText(l, bx + 8, by + 20 + i * 16));
+    });
+  }
+
+  return Object.assign(indices, {LFC, EL, freezingAlt});
 }
 
 var soundingData;
 
-var prepareSoundingRequestId = 0; // guards against overlapping calls (e.g. fast typing in the city search box) resolving out of order
+var prepareSoundingRequestId = 0; // guards against overlapping calls (e.g. fast clicking through dates) resolving out of order
 
-// Fetches meteociel's own official graph image for a real station/date and shows it in #soundingPreview,
-// once we already know that station has real data for this date/hour (from loadStationSounding()/
-// findRealSoundingForCity() succeeding). Never blocks the table/canvas rendering above it in
-// prepareSounding() -- this is a best-effort visual bonus, guarded by the same request id so a slow,
-// now-stale image fetch can't clobber a newer selection.
+// Fetches meteociel's own official graph image and shows it in #soundingPreview, only for a sounding that
+// actually came from the meteociel archive. Best-effort, guarded by the request id so a slow, now-stale
+// image fetch can't clobber a newer selection.
 async function loadAndShowRealImage(stationID, timeStamp, requestId)
 {
   const imgEl = document.getElementById('soundingPreview');
@@ -2446,107 +2772,138 @@ async function loadAndShowRealImage(stationID, timeStamp, requestId)
   imgEl.hidden = false;
 }
 
+// Fills the home-screen index tiles (#soundingStats) from computeSoundingIndicesFromTable()'s result, each
+// tile colored by how favorable that value is for severe convection.
+function renderSoundingStats(indices, table)
+{
+  const statsEl = document.getElementById('soundingStats');
+  if (!statsEl)
+    return;
+
+  statsEl.innerHTML = '';
+  if (!indices)
+    return;
+
+  const surface = table[table.length - 1];
+  let freezingAlt = null;
+  for (let i = table.length - 1; i > 0; i--) {
+    if (table[i].t > 0 && table[i - 1].t <= 0) {
+      freezingAlt = table[i].alt + (table[i - 1].alt - table[i].alt) * table[i].t / (table[i].t - table[i - 1].t);
+      break;
+    }
+  }
+
+  const level = (value, thresholds) => value >= thresholds[2] ? 'extreme' : value >= thresholds[1] ? 'high' : value >= thresholds[0] ? 'moderate' : 'low';
+
+  const tiles = [
+    {label : 'CAPE', value : indices.CAPE.toFixed(0) + ' J/kg', level : level(indices.CAPE, [ 300, 1000, 2500 ])},
+    {label : 'CIN', value : indices.CIN.toFixed(0) + ' J/kg', level : indices.CIN < -150 ? 'moderate' : 'low'},
+    {label : 'LCL', value : printAltitude(indices.LCL_height - surface.alt), level : 'neutral'},
+    {label : 'LFC → EL', value : indices.LFC != null ? printAltitude(indices.LFC) + ' → ' + printAltitude(indices.EL) : '—', level : indices.EL != null && indices.EL > 10000 ? 'high' : 'neutral'},
+    {label : 'Cisaillement 0-6 km', value : printVelocity(indices.shear06), level : level(indices.shear06, [ 10, 18, 25 ])},
+    {label : 'STP', value : indices.STP.toFixed(2), level : level(indices.STP, [ 0.3, 1, 3 ])},
+    {label : 'T / Td sol', value : printTemp(surface.t) + ' / ' + printTemp(surface.td), level : 'neutral'},
+    {label : 'Isotherme 0 °C', value : freezingAlt !== null ? printAltitude(freezingAlt) : '—', level : 'neutral'},
+  ];
+
+  for (const tile of tiles) {
+    const el = document.createElement('div');
+    el.className = 'stat-tile stat-' + tile.level;
+    const labelEl = document.createElement('span');
+    labelEl.className = 'stat-label';
+    labelEl.textContent = tile.label;
+    const valueEl = document.createElement('span');
+    valueEl.className = 'stat-value';
+    valueEl.textContent = tile.value;
+    el.appendChild(labelEl);
+    el.appendChild(valueEl);
+    statsEl.appendChild(el);
+  }
+}
+
 async function prepareSounding()
 {
   const requestId = ++prepareSoundingRequestId;
 
+  const loc = soundingLocation;
+  if (!loc)
+    return;
+
   const dateSel = document.getElementById('datePicker');
   const hourSelector = document.getElementById('hourSelector');
-  const hour = hourSelector.options[hourSelector.selectedIndex].value;
-
-  const epochTime = parseIsoDateToEpoch(dateSel.value, hour);
+  const epochTime = parseIsoDateToEpoch(dateSel.value, hourSelector.value);
 
   const statusEl = document.getElementById('soundingStatus');
   const titleEl = document.getElementById('soundingTitle');
   const imgEl = document.getElementById('soundingPreview');
+  const cardEl = document.getElementById('stations-section');
 
-  const cityName = geocodedCity ? geocodedCity.label : stationSelector.options[stationSelector.selectedIndex].textContent;
+  function setStatus(text, kind)
+  {
+    if (statusEl) {
+      statusEl.textContent = '';
+      statusEl.appendChild(svgIcon({success : 'check', error : 'alert', loading : 'loader'}[kind]));
+      statusEl.appendChild(document.createTextNode(text.replace(/^[✓⚠]\s*/, '')));
+      statusEl.className = 'sounding-status ' + kind;
+    }
+    if (cardEl)
+      cardEl.classList.toggle('is-loading', kind === 'loading');
+  }
 
-  if (titleEl)
-    titleEl.textContent = geocodedCity ? '📍 ' + cityName : cityName;
+  function showNoData(message)
+  {
+    setStatus(message, 'error');
+    renderSoundingStats(null);
+    const canvas = document.getElementById('soundingCanvas');
+    if (canvas)
+      canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height); // no stale/fabricated graph left on screen
+  }
 
   if (imgEl)
     imgEl.hidden = true; // hidden until a real image URL actually resolves below -- never shows a broken icon
 
-  const NO_DATA_MESSAGE = 'Pas de sondage réel Meteociel disponible pour cette date/lieu. Veuillez choisir une date passée.';
-
-  function showNoRealData(message)
-  {
-    if (statusEl) {
-      statusEl.textContent = message || NO_DATA_MESSAGE;
-      statusEl.className = 'sounding-status error';
-    }
-    const canvas = document.getElementById('soundingCanvas');
-    if (canvas)
-      canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height); // no fabricated graph left on screen
-  }
-
-  if (epochTime === null) { // datePicker.value wasn't a well-formed YYYY-MM-DD -- never send 'date=NaN'/'undefined' to Meteociel
-    console.log('Fetching sounding: aborted, invalid date value:', dateSel.value);
-    showNoRealData('⚠ Date invalide (format attendu : AAAA-MM-JJ).');
-    return;
-  }
-
-  lastSoundingEpochTime = epochTime; // remembered for in-game station markers, which have no date picker of their own
-
-  if (isFutureTimestamp(epochTime)) { // no Meteociel archive can have a date that hasn't happened yet -- don't even try fetching
-    showNoRealData();
-    return;
-  }
-
-  if (statusEl) {
-    statusEl.textContent = (geocodedCity ? 'Recherche du sondage réel Meteociel le plus proche pour ' : 'Chargement du sondage Meteociel pour ') + cityName + '...';
-    statusEl.className = 'sounding-status loading';
-  }
-
-  if (geocodedCity) {
-    const found = await findRealSoundingForCity(geocodedCity.lat, geocodedCity.lon, epochTime, () => requestId !== prepareSoundingRequestId);
-
-    if (requestId !== prepareSoundingRequestId)
-      return; // a newer call already superseded this one
-
-    if (!found) {
-      showNoRealData();
-      return;
-    }
-
-    soundingData = found.table;
-    guiControls.activeSoundingStation = found.stationKey; // keeps the in-game station switcher (dropdown + marker bar) in sync
-    drawSetupEmagram(found.table);
-
+  if (epochTime === null) {
     if (titleEl)
-      titleEl.textContent = '📍 ' + cityName + ' → ' + found.stationKey + ' (' + Math.round(found.distanceKm) + ' km)';
-    if (statusEl) {
-      statusEl.textContent = '✓ Sondage réel Meteociel chargé — station ' + found.stationKey + ' (' + Math.round(found.distanceKm) + ' km)';
-      statusEl.className = 'sounding-status success';
-    }
-
-    await loadAndShowRealImage(soundingStations[found.stationKey].id, epochTime, requestId);
+      titleEl.textContent = loc.label;
+    showNoData('⚠ Date invalide (format attendu : AAAA-MM-JJ).');
     return;
   }
 
-  const table = await loadStationSounding(stationSelector.value, epochTime);
+  if (titleEl)
+    titleEl.textContent = loc.label + ' · ' + formatSoundingTime(epochTime);
+
+  lastSoundingEpochTime = epochTime; // seeds the in-game date/hour widget
+
+  if (isBeyondForecastRange(epochTime)) {
+    showNoData('⚠ Les prévisions ne vont que jusqu\'à ' + SOUNDING_MAX_FORECAST_DAYS + ' jours.');
+    return;
+  }
+
+  setStatus('Chargement du sondage pour ' + loc.label + '…', 'loading');
+
+  const result = await loadSoundingAt(loc, epochTime);
 
   if (requestId !== prepareSoundingRequestId)
-    return; // a newer call (e.g. the user picked a different station/date) already superseded this one
+    return; // a newer call already superseded this one
 
-  if (!table) {
-    showNoRealData();
+  if (!result) {
+    if (epochTime < OPEN_METEO_START_EPOCH)
+      showNoData(loc.id ? '⚠ Avant le 23/03/2021, seule l\'archive Meteociel existe — elle bloque actuellement les requêtes automatiques. Choisissez une date plus récente.'
+                        : '⚠ Pas de données modèle avant le 23/03/2021. Choisissez une date plus récente.');
+    else
+      showNoData('⚠ Sondage indisponible pour le moment (connexion ?). Réessayez dans un instant.');
     return;
   }
 
-  soundingData = table;
-  const pickedOption = stationSelector.options[stationSelector.selectedIndex];
-  if (pickedOption.dataset.key)
-    guiControls.activeSoundingStation = pickedOption.dataset.key; // keeps the in-game station switcher (dropdown + marker bar) in sync
-  drawSetupEmagram(table);
+  soundingData = result.table;
+  if (loc.key)
+    guiControls.activeSoundingStation = loc.key; // keeps the in-game station switcher in sync
 
-  if (statusEl) {
-    statusEl.textContent = '✓ Sondage réel Meteociel chargé — ' + cityName;
-    statusEl.className = 'sounding-status success';
-  }
+  renderSoundingStats(drawSetupEmagram(result.table), result.table);
+  setStatus('✓ ' + soundingSourceLabel(result.source) + ' — ' + formatLatLon(loc.lat, loc.lon), 'success');
 
-  await loadAndShowRealImage(stationSelector.value, epochTime, requestId);
+  if (result.source === 'meteociel')
+    await loadAndShowRealImage(loc.id, epochTime, requestId);
 }
 
 async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initialRainDrops)
@@ -2918,7 +3275,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gain.gain.value = volume;
       pan.pan.value = clamp(leftRightBalance, -1., 1.);
       src.connect(gain).connect(pan).connect(this.audioCtx.destination);
-      src.start(this.audioCtx.currentTime + delay);
+      src.start(this.audioCtx.currentTime + (Number.isFinite(delay) ? Math.max(delay, 0) : 0)); // delay is Infinity/NaN while the sim is paused
     }
 
     playLoop(buffer, volume = 1, leftRightBalance = 0)
@@ -4628,6 +4985,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     setupDatGui(JSON.stringify(guiControls_default));
     guiControls.simHeight = sim_height;
     guiControls.globalEffectsEndAlt = sim_height;
+    guiControls.windCeilingAlt = Math.round(sim_height * 0.66 / 100) * 100;
+
+    if (applySoundingAtStart && soundingData)
+      guiControls.soundingForcing = 1.0; // the sounding picked on the home screen shapes the atmosphere right away
 
     if (startDate) {
       guiControls.month = startDate.getMonth() + 1 + startDate.getDate() / 30.5;
@@ -4662,6 +5023,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'), guiControls.dragMultiplier);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), guiControls.wind);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'uWindMultiplier'), windMultiplier); // must never be left at WebGL's implicit 0.0 default, or all wind force is silently suppressed
+    gl.uniform1f(gl.getUniformLocation(velocityProgram, 'windTaperStart'), guiControls.windCeilingAlt / guiControls.simHeight);
     gl.useProgram(lightingProgram);
     gl.uniform1f(gl.getUniformLocation(lightingProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
     gl.uniform1f(gl.getUniformLocation(lightingProgram, 'greenhouseGases'), guiControls.greenhouseGases);
@@ -4676,6 +5038,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'soundingForcing'), guiControls.soundingForcing);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalEffectsStartAlt'), guiControls.globalEffectsStartAlt / guiControls.simHeight);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalEffectsEndAlt'), guiControls.globalEffectsEndAlt / guiControls.simHeight);
+    gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windTaperStart'), guiControls.windCeilingAlt / guiControls.simHeight);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
     gl.useProgram(precipitationProgram);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'evapHeat'), guiControls.evapHeat);
@@ -4702,6 +5065,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   {
     datGui = new dat.GUI();
     guiControls = JSON.parse(strGuiControls); // load settings object
+
+    for (const [key, value] of Object.entries(guiControls_default)) // settings added after a save file was made get their default
+      if (guiControls[key] === undefined)
+        guiControls[key] = value;
 
     guiControls.tool = 'TOOL_NONE';
 
@@ -4760,6 +5127,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     fluidParams_folder.add(guiControls, 'resetWind').name('Réinitialiser les vents');
 
+    // Wind ceiling: the wind force and the sounding's wind target both fade smoothly to 0 between this
+    // altitude and the top of the map, so jet-stream winds never slam into the rigid top boundary. Set it to
+    // the full sim height to disable.
+    fluidParams_folder.add(guiControls, 'windCeilingAlt', 1000, guiControls.simHeight, 100)
+      .onChange(function() {
+        const taperStart = guiControls.windCeilingAlt / guiControls.simHeight;
+        gl.useProgram(velocityProgram);
+        gl.uniform1f(gl.getUniformLocation(velocityProgram, 'windTaperStart'), taperStart);
+        gl.useProgram(advectionProgram);
+        gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windTaperStart'), taperStart);
+      })
+      .name('Plafond du vent (m)')
+      .listen();
+
     fluidParams_folder.add(guiControls, 'globalDrying', 0.0, 0.0001, 0.000001)
       .onChange(function() {
         gl.useProgram(advectionProgram);
@@ -4780,7 +5161,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(advectionProgram);
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'soundingForcing'), guiControls.soundingForcing);
       })
-      .name('Sounding Forcing');
+      .name('Sounding Forcing')
+      .listen(); // also set from code: at start when a home-screen sounding is applied, and by loadStationForForcing()
 
     // Right next to the Sounding Forcing slider itself, not just as the separate on-screen marker bar --
     // switching the real Meteociel station driving that forcing is a single click here.
@@ -4796,7 +5178,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     if (lastSoundingEpochTime !== null) {
       const seedDate = new Date(lastSoundingEpochTime * 1000);
       guiControls.soundingDate = seedDate.toISOString().slice(0, 10);
-      guiControls.soundingHour = seedDate.getUTCHours() >= 12 ? 12 : 0;
+      guiControls.soundingHour = seedDate.getUTCHours();
     }
 
     fluidParams_folder.add(guiControls, 'showStationMarkers')
@@ -5321,163 +5703,193 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
   }
 
-  // Reads guiControls.soundingDate/soundingHour -- set by the glassmorphism date/hour widget
-  // (setupSoundingDateTimeWidget()) -- the ONLY source of truth for which Meteociel archive slot in-game
-  // station switching queries. Returns null (via parseIsoDateToEpoch()) if the date isn't well-formed
-  // YYYY-MM-DD.
+  // Reads guiControls.soundingDate/soundingHour -- set by the date/hour widget (setupSoundingDateTimeWidget())
+  // -- the ONLY source of truth for which date/hour in-game station switching loads. Returns null (via
+  // parseIsoDateToEpoch()) if the date isn't well-formed YYYY-MM-DD.
   function getInGameSoundingEpochTime()
   {
     return parseIsoDateToEpoch(guiControls.soundingDate, guiControls.soundingHour);
   }
 
-  // Shared by the on-screen marker bar, the "Sounding Station" dropdown right next to the Sounding
-  // Forcing slider (see setupDatGui()'s fluidParams_folder), and the glassmorphism date/hour widget
-  // (setupSoundingDateTimeWidget()) -- whichever UI the player uses to switch stations or change the
-  // date/hour, this is the one place that actually fetches the real data and re-pushes it into the
-  // live simulation, and keeps every other station-switching control in sync afterward.
-  async function loadStationForForcing(key)
+  function setForcingStatus(text, kind)
   {
     const statusEl = document.getElementById('stationMarkerStatus');
-    if (statusEl)
-      statusEl.textContent = 'Chargement du sondage réel Meteociel pour ' + key + '...';
+    if (!statusEl)
+      return;
+    statusEl.textContent = '';
+    statusEl.appendChild(svgIcon({success : 'check', error : 'alert', loading : 'loader'}[kind] || 'pin'));
+    statusEl.appendChild(document.createTextNode(text.replace(/^[✓⚠]\s*/, '')));
+    statusEl.dataset.kind = kind || '';
+  }
 
-    // Reads exclusively from guiControls.soundingDate/soundingHour, driven by the glassmorphism
-    // date/hour widget -- never the setup screen's lastSoundingEpochTime, which only ever seeds
-    // their initial value once (see setupDatGui()).
+  // Shared by the marker bar, the "Sounding Station" dropdown next to the Sounding Forcing slider, the
+  // in-game city search and the date/hour widget: the one place that fetches a sounding and pushes it
+  // live into the running simulation, keeping every station-switching control in sync afterward.
+  let forcingRequestId = 0;
+  async function loadStationForForcing(key)
+  {
+    const station = soundingStations[key];
+    if (!station) {
+      setForcingStatus('⚠ Lieu inconnu : ' + key, 'error');
+      return false;
+    }
+
     const epochTime = getInGameSoundingEpochTime();
-
     if (epochTime === null) {
-      if (statusEl)
-        statusEl.textContent = '⚠ Date invalide (format attendu : AAAA-MM-JJ).';
+      setForcingStatus('⚠ Date invalide (format attendu : AAAA-MM-JJ).', 'error');
       return false;
     }
 
-    const table = await loadStationSounding(soundingStations[key].id, epochTime);
+    const requestId = ++forcingRequestId;
+    setForcingStatus('Chargement du sondage — ' + key + ' · ' + formatSoundingTime(epochTime) + '…', 'loading');
 
-    if (!table) {
-      if (statusEl)
-        statusEl.textContent = '⚠ Sondage Meteociel indisponible pour ce créneau (' + key + ').';
+    const result = await loadSoundingAt(station, epochTime);
+
+    if (requestId !== forcingRequestId)
+      return false; // superseded by a newer click
+
+    if (!result) {
+      setForcingStatus(epochTime < OPEN_METEO_START_EPOCH ? '⚠ Pas de données avant le 23/03/2021 pour ' + key + '.'
+                                                          : '⚠ Sondage indisponible pour ' + key + ' (connexion ?).', 'error');
       return false;
     }
 
-    soundingData = table;
+    soundingData = result.table;
     updateSoundingForcingUniforms(); // live-updates what the running sim's soundingForcing pulls toward
 
     guiControls.activeSoundingStation = key; // syncs the dropdown (its .listen()) even when picked from the marker bar instead
 
-    const bar = document.getElementById('stationMarkersBar');
-    if (bar) {
-      for (const b of bar.children)
-        b.style.background = (b.dataset.stationKey === key) ? 'rgba(80, 160, 255, 0.55)' : 'rgba(255, 255, 255, 0.08)';
+    if (guiControls.soundingForcing < 0.05) { // a sounding the player explicitly picked should visibly do something
+      guiControls.soundingForcing = 1.0;
+      gl.useProgram(advectionProgram);
+      gl.uniform1f(gl.getUniformLocation(advectionProgram, 'soundingForcing'), guiControls.soundingForcing);
     }
 
-    if (statusEl)
-      statusEl.textContent = '✓ Sounding Forcing mis à jour — station ' + key;
+    const bar = document.getElementById('stationMarkersBar');
+    if (bar) {
+      for (const b of bar.querySelectorAll('button[data-station-key]'))
+        b.classList.toggle('active', b.dataset.stationKey === key);
+    }
+
+    setForcingStatus('✓ ' + soundingSourceLabel(result.source) + ' — ' + key + ' · ' + formatSoundingTime(epochTime), 'success');
     return true;
   }
 
-  // Real Meteociel radiosonde station pins, overlaid directly on the main game view (no separate map) --
-  // click one to load ITS real archived sounding (at the Date/Hour set in the glassmorphism date/hour
-  // widget, see setupSoundingDateTimeWidget() and getInGameSoundingEpochTime()) and push it live into the
-  // running sim's Sounding Forcing. On by default (guiControls.showStationMarkers) so the stations are
-  // immediately usable, not tucked behind a disabled toggle -- that checkbox only exists to declutter the
-  // screen for players who don't want it.
+  // Location pins overlaid at the bottom of the game view -- click one to load ITS sounding (at the date/hour
+  // set in the widget) into the running sim's Sounding Forcing. The searched city (custom) comes first.
   function setupStationMarkers()
   {
     const bar = document.createElement('div');
     bar.id = 'stationMarkersBar';
+    bar.className = 'station-markers-bar';
     document.body.appendChild(bar);
-    bar.style.position = 'fixed';
-    bar.style.left = '0px';
-    bar.style.right = '0px';
-    bar.style.bottom = '0px';
-    bar.style.zIndex = 4;
-    bar.style.maxHeight = '46px';
-    bar.style.overflowX = 'auto';
-    bar.style.whiteSpace = 'nowrap';
-    bar.style.padding = '6px 8px';
-    bar.style.background = 'rgba(0,0,0,0.45)';
-    bar.style.fontFamily = 'Monospace';
     bar.style.display = guiControls.showStationMarkers ? 'block' : 'none';
 
     const statusEl = document.createElement('div');
     statusEl.id = 'stationMarkerStatus';
+    statusEl.className = 'station-marker-status';
     document.body.appendChild(statusEl);
-    statusEl.style.position = 'fixed';
-    statusEl.style.left = '8px';
-    statusEl.style.bottom = '52px';
-    statusEl.style.zIndex = 4;
-    statusEl.style.fontFamily = 'Monospace';
-    statusEl.style.fontSize = '13px';
-    statusEl.style.color = 'white';
-    statusEl.style.textShadow = '1px 1px 2px black';
     statusEl.style.display = guiControls.showStationMarkers ? 'block' : 'none';
 
-    for (const key of Object.keys(soundingStations)) {
-      const btn = document.createElement('button');
-      btn.textContent = '📍 ' + key;
-      btn.title = 'Charger le sondage réel Meteociel de ' + key;
-      btn.dataset.stationKey = key;
-      btn.style.marginRight = '4px';
-      btn.style.padding = '4px 8px';
-      btn.style.fontSize = '12px';
-      btn.style.color = 'white';
-      btn.style.background = (key === guiControls.activeSoundingStation) ? 'rgba(80, 160, 255, 0.55)' : 'rgba(255, 255, 255, 0.08)';
-      btn.style.border = '1px solid rgba(255, 255, 255, 0.3)';
-      btn.style.borderRadius = '4px';
-      btn.style.cursor = 'pointer';
+    const keys = Object.keys(soundingStations).sort((a, b) => (soundingStations[b].custom ? 1 : 0) - (soundingStations[a].custom ? 1 : 0));
 
-      btn.addEventListener('click', function() { loadStationForForcing(key); });
-
-      bar.appendChild(btn);
-    }
+    for (const key of keys)
+      bar.appendChild(createStationMarkerButton(key));
   }
 
-  // Floating glassmorphism date/hour widget for the in-game Sounding Forcing, replacing the old austere
-  // dat.GUI "Sounding Date"/"Sounding Hour" text controls. Sits just above the station markers bar (bottom
-  // of screen) since there's no separate in-game Émagramme panel or search bar to dock next to. Any change
-  // here writes into guiControls.soundingDate/soundingHour (read by getInGameSoundingEpochTime()) and
-  // immediately reloads the active station's real Meteociel archive via loadStationForForcing().
+  function createStationMarkerButton(key)
+  {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.appendChild(svgIcon(soundingStations[key].custom ? 'pin' : soundingStations[key].id ? 'balloon' : 'star'));
+    btn.appendChild(document.createTextNode(key));
+    btn.title = 'Charger le sondage de ' + key;
+    btn.dataset.stationKey = key;
+    btn.classList.toggle('active', key === guiControls.activeSoundingStation);
+    btn.addEventListener('click', function() { loadStationForForcing(key); });
+    return btn;
+  }
+
+  // Floating date/hour widget for the in-game Sounding Forcing, with a city search so ANY place can be loaded
+  // without going back to the home screen. Any change writes guiControls.soundingDate/soundingHour (read by
+  // getInGameSoundingEpochTime()) and immediately reloads the active location via loadStationForForcing().
   function setupSoundingDateTimeWidget()
   {
     const widget = document.createElement('div');
     widget.id = 'soundingDateTimeWidget';
     widget.className = 'sounding-datetime-widget';
     document.body.appendChild(widget);
-    widget.style.position = 'fixed';
-    widget.style.right = '8px';
-    widget.style.bottom = '60px';
-    widget.style.zIndex = 4;
     widget.style.display = guiControls.showStationMarkers ? 'flex' : 'none';
+
+    // Keyboard shortcuts are global (keydown on document); typing in these inputs must not trigger them.
+    widget.addEventListener('keydown', event => event.stopPropagation());
+    widget.addEventListener('keyup', event => event.stopPropagation());
+
+    const cityInput = document.createElement('input');
+    cityInput.type = 'text';
+    cityInput.placeholder = 'Ville… (Entrée)';
+    cityInput.className = 'widget-city-input';
+    cityInput.title = 'Tapez une ville puis Entrée pour charger son sondage';
+    widget.appendChild(cityInput);
+
+    cityInput.addEventListener('keydown', async function(event) {
+      if (event.key !== 'Enter')
+        return;
+      const query = cityInput.value.trim();
+      if (query.length < 2)
+        return;
+      setForcingStatus('Recherche de « ' + query + ' »…', 'loading');
+      try {
+        const places = await geocodePlaces(query);
+        if (places.length === 0) {
+          setForcingStatus('⚠ Aucun lieu trouvé pour « ' + query + ' »', 'error');
+          return;
+        }
+        const p = places[0];
+        const key = p.country ? p.name + ', ' + p.country : p.name;
+        soundingStations[key] = {id : null, lat : p.lat, lon : p.lon, custom : true};
+        const bar = document.getElementById('stationMarkersBar');
+        if (bar && !Array.from(bar.children).some(b => b.dataset.stationKey === key))
+          bar.prepend(createStationMarkerButton(key));
+        cityInput.value = '';
+        cityInput.blur();
+        loadStationForForcing(key);
+      } catch (err) {
+        setForcingStatus('⚠ Recherche indisponible (hors ligne ?)', 'error');
+      }
+    });
 
     const dateInput = document.createElement('input');
     dateInput.type = 'date';
     dateInput.id = 'soundingDateInput';
     dateInput.value = guiControls.soundingDate;
+    dateInput.max = new Date(Date.now() + SOUNDING_MAX_FORECAST_DAYS * 86400 * 1000).toISOString().slice(0, 10);
     widget.appendChild(dateInput);
 
-    const btn00Z = document.createElement('button');
-    btn00Z.type = 'button';
-    btn00Z.className = 'hour-btn';
-    btn00Z.textContent = '00Z';
-    widget.appendChild(btn00Z);
-
-    const btn12Z = document.createElement('button');
-    btn12Z.type = 'button';
-    btn12Z.className = 'hour-btn';
-    btn12Z.textContent = '12Z';
-    widget.appendChild(btn12Z);
+    const hourButtons = [];
+    for (const hour of [ 0, 6, 12, 18 ]) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'hour-btn';
+      btn.textContent = String(hour).padStart(2, '0') + 'Z';
+      btn.addEventListener('click', function() {
+        guiControls.soundingHour = hour;
+        refreshHourButtons();
+        loadStationForForcing(guiControls.activeSoundingStation);
+      });
+      hourButtons.push({hour, btn});
+      widget.appendChild(btn);
+    }
 
     function refreshHourButtons()
     {
-      btn00Z.classList.toggle('active', guiControls.soundingHour === 0);
-      btn12Z.classList.toggle('active', guiControls.soundingHour === 12);
+      for (const {hour, btn} of hourButtons)
+        btn.classList.toggle('active', guiControls.soundingHour === hour);
     }
     refreshHourButtons();
 
     // Light debounce: the native date picker's spinner arrows/keyboard can fire several 'change' events in
-    // quick succession while the player is still settling on a day. Waiting a short idle gap before actually
-    // reloading avoids spamming the Meteociel fetch (and the loading-status DOM update) once per keystroke.
+    // quick succession while the player is still settling on a day.
     let dateInputDebounceId = null;
     dateInput.addEventListener('change', function() {
       if (dateInputDebounceId !== null)
@@ -5487,18 +5899,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         guiControls.soundingDate = dateInput.value;
         loadStationForForcing(guiControls.activeSoundingStation);
       }, 350);
-    });
-
-    btn00Z.addEventListener('click', function() {
-      guiControls.soundingHour = 0;
-      refreshHourButtons();
-      loadStationForForcing(guiControls.activeSoundingStation);
-    });
-
-    btn12Z.addEventListener('click', function() {
-      guiControls.soundingHour = 12;
-      refreshHourButtons();
-      loadStationForForcing(guiControls.activeSoundingStation);
     });
   }
 

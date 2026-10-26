@@ -15,6 +15,7 @@ uniform float dragMultiplier;
 
 uniform float wind;
 uniform float uWindMultiplier; // 1.0 = normal; ramped 1.0 -> 0.0 over 5s by startWindReset() in app.js to cut the global wind force off smoothly, applied here before this frame's pressure projection (pressureProgram, later in the same iteration) rather than touching the velocity field directly
+uniform float windTaperStart;  // normalized altitude (0 = ground, 1 = top) above which the wind force fades smoothly to 0 at the top of the map
 
 uniform vec2 texelSize;
 // uniform vec2 resolution;
@@ -65,6 +66,7 @@ void main()
     // dragMultiplier; base[VY] -= base[VY] * base[VY] * base[VY] * base[VY] *
     // base[VY] * dragMultiplier;
 
-    base[VX] += wind * uWindMultiplier * 0.000001;
+    // Faded out with altitude (see windTaper() in common.glsl) so strong winds aloft never run into the rigid top boundary
+    base[VX] += wind * uWindMultiplier * 0.000001 * windTaper(texCoord.y, windTaperStart);
   }
 }
