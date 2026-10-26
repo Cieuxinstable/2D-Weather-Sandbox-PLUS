@@ -377,6 +377,7 @@ function formatSoundingTime(timeStamp)
 // Sounding wind targets are clamped to the soft start of the velocity limiter (cells/iteration); updated from
 // the "Limite de vent" setting by applyWindLimit() once the simulation runs.
 var simVelTargetMax = 0.30;
+var windDisplayMultiplier = 10.0; // display mode 4 color scale, set from guiControls.windDisplayKmh
 
 // Velocity unit conversions for the current grid: raw sim velocity is in cells/iteration, and the sim's pressure
 // waves ("speed of sound") travel exactly 1 cell/iteration, so the stable wind range depends on the cell size.
@@ -987,7 +988,8 @@ const guiControls_default = {
   soundingHour : 12,                // in-game Sounding Hour (UTC, 0-23)
   windCeilingAlt : 8000,
   windLimitKmh : 0,
-  shearSmoothing : 1.0,             // 0..1: smooths overly sharp vertical wind shear (jet edges) to prevent Kelvin-Helmholtz waves                 // flow speed limit (km/h) for numerical stability; 0 = automatic safe value for the grid
+  shearSmoothing : 1.0,
+  windDisplayKmh : 0,               // horizontal wind speed shown at full color in display mode 4; 0 = automatic (original scale)             // 0..1: smooths overly sharp vertical wind shear (jet edges) to prevent Kelvin-Helmholtz waves                 // flow speed limit (km/h) for numerical stability; 0 = automatic safe value for the grid
   skyEffects : true,                // sun disc, moon, stars and sunrise/sunset sky colors in the background            // meters. Above this altitude the wind (global wind force + sounding wind) fades smoothly to 0 at the top of the map
 };
 
@@ -5069,6 +5071,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalEffectsEndAlt'), guiControls.globalEffectsEndAlt / guiControls.simHeight);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windTaperStart'), guiControls.windCeilingAlt / guiControls.simHeight);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'shearSmoothing'), guiControls.shearSmoothing);
+    gl.uniform1f(gl.getUniformLocation(advectionProgram, 'cellHeightM'), guiControls.simHeight / sim_res_y);
+    gl.uniform1f(gl.getUniformLocation(advectionProgram, 'dtSeconds'), timePerIteration * 3600);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
     gl.useProgram(precipitationProgram);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'evapHeat'), guiControls.evapHeat);
@@ -5581,6 +5585,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     display_folder.add(guiControls, 'SmoothCam').onChange(function() { cam.smooth = guiControls.SmoothCam; }).name('Caméra fluide');
 
     display_folder.add(guiControls, 'showGraph').onChange(hideOrShowGraph).name('Afficher le sondage').listen();
+
+    // Wind display scale for mode 4: the original fixed scale saturates at ~25-50 km/h, so a jet stream showed as
+    // a uniform red band. Full color now corresponds to an adjustable speed (0 = original scale).
+    {
+      const simHeightNow = guiControlsFromSaveFile == null ? sim_height : guiControls.simHeight;
+      const kmhPerRaw = kmhPerRawVelocity(simHeightNow, sim_res_y);
+      if (!(guiControls.windDisplayKmh > 0))
+        guiControls.windDisplayKmh = Math.round(0.1 * kmhPerRaw);
+      const applyWindDisplay = () => { windDisplayMultiplier = kmhPerRaw / guiControls.windDisplayKmh; };
+      applyWindDisplay();
+      display_folder.add(guiControls, 'windDisplayKmh', 10, 400, 5).onChange(applyWindDisplay).name('Échelle du vent affiché (km/h)');
+    }
 
     display_folder.add(guiControls, 'skyEffects')
       .onChange(function() {
@@ -8892,7 +8908,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         switch (guiControls.displayMode) {
         case 'DISP_HORIVEL':
           gl.uniform1i(uniformLocation_universalDisplayProgram_quantityIndex, 0);
-          gl.uniform1f(uniformLocation_universalDisplayProgram_dispMultiplier, 10.0); // 20.0
+          gl.uniform1f(uniformLocation_universalDisplayProgram_dispMultiplier, windDisplayMultiplier); // full color at guiControls.windDisplayKmh
           break;
         case 'DISP_VERTVEL':
           gl.uniform1i(uniformLocation_universalDisplayProgram_quantityIndex, 1);

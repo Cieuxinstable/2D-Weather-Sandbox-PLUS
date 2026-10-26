@@ -49,7 +49,9 @@ uniform float waterTemperature;
 // indefinitely, since neither this nor the velocity shader's own wind cutoff erase momentum the fluid
 // already has.
 uniform float uWindMultiplier;
-uniform float shearSmoothing; // 0..1, "Dégradé du vent" setting: strength of the shear-triggered vertical momentum diffusion below
+uniform float shearSmoothing; // 0..1, "Dégradé du vent" setting: strength of the Richardson-number mixing below
+uniform float cellHeightM;    // cell size in meters
+uniform float dtSeconds;      // simulated seconds per iteration
 uniform float windTaperStart; // normalized altitude above which wind fades out toward the top of the map, see windTaper() in common.glsl
 
 layout(location = 0) out vec4 base;
@@ -102,18 +104,26 @@ void main()
 
     base[VX] = bilerp(baseTex, fragCoord - velAtVx).x;
 
-    // Wind gradient ("Dégradé du vent"): vertical momentum diffusion that only switches on where the vertical
-    // shear of the horizontal wind is too sharp, like turbulent mixing in the real atmosphere. Without it a strong
-    // jet ends in a step (full speed -> calm within a few cells), which rolls up into Kelvin-Helmholtz billows that
-    // radiate waves up to the top of the map. Diffusing the step turns it into a smooth ramp. Ordinary convective
-    // flows stay below the threshold and are untouched. Coefficient capped at 0.2 (explicit diffusion is stable
-    // up to 0.5), skipped next to walls so it never acts as extra ground friction.
+    // Wind gradient ("Dégradé du vent"): Richardson-number turbulent mixing of horizontal momentum, the same idea
+    // weather models use. A layer is dynamically unstable (Kelvin-Helmholtz billows: the growing bubbles of reversed
+    // wind along the edge of a strong jet) when Ri = N^2 / S^2 < 0.25, i.e. when the vertical wind shear S beats the
+    // stable stratification N. In the real atmosphere turbulence then mixes the layer before billows can grow; here
+    // momentum is diffused vertically in proportion to how far Ri is below 0.25, so mixing happens exactly where
+    // billows would form and nowhere else. A small minimum shear keeps calm or convective air with weak shear
+    // untouched. Coefficient capped at 0.25 (explicit diffusion is stable up to 0.5); skipped next to walls so it
+    // never acts as extra ground friction.
     if (shearSmoothing > 0.0) {
       ivec4 wallUp = texture(wallTex, texCoordX0Yp);
       ivec4 wallDown = texture(wallTex, texCoordX0Ym);
       if (wallUp[DISTANCE] != 0 && wallDown[DISTANCE] != 0) {
-        float shear = abs(cellX0Yp.x - cellX0Ym.x) * 0.5; // cells/iteration per cell
-        float mixing = clamp((shear - 0.012) * 6.0, 0.0, 0.2) * shearSmoothing;
+        float shearRaw = abs(cellX0Yp.x - cellX0Ym.x) * 0.5;                    // cells/iteration per cell
+        float S = shearRaw / dtSeconds;                                         // vertical shear, 1/s
+        float dThetaDz = (cellX0Yp[TEMPERATURE] - cellX0Ym[TEMPERATURE]) / (2.0 * cellHeightM); // potential temperature gradient, K/m
+        float N2 = 9.81 / max(cellX0Y0[TEMPERATURE], 150.0) * dThetaDz;       // Brunt-Vaisala frequency squared, 1/s^2
+        float Ri = N2 / max(S * S, 1e-12);
+        float unstable = clamp(1.0 - Ri / 0.25, 0.0, 1.0);                      // 0 at Ri >= 0.25, 1 at Ri <= 0
+        float enoughShear = smoothstep(0.004, 0.010, S);                        // ~15 -> 35 km/h per km
+        float mixing = 0.25 * unstable * enoughShear * shearSmoothing;
         base[VX] += mixing * (cellX0Yp.x + cellX0Ym.x - 2.0 * cellX0Y0.x);
       }
     }
