@@ -986,7 +986,8 @@ const guiControls_default = {
   soundingDate : '2025-06-15',      // in-game Sounding Date (YYYY-MM-DD); re-seeded from the setup screen's own date once mainScript() starts -- see setupDatGui()
   soundingHour : 12,                // in-game Sounding Hour (UTC, 0-23)
   windCeilingAlt : 8000,
-  windLimitKmh : 0,                 // flow speed limit (km/h) for numerical stability; 0 = automatic safe value for the grid
+  windLimitKmh : 0,
+  shearSmoothing : 1.0,             // 0..1: smooths overly sharp vertical wind shear (jet edges) to prevent Kelvin-Helmholtz waves                 // flow speed limit (km/h) for numerical stability; 0 = automatic safe value for the grid
   skyEffects : true,                // sun disc, moon, stars and sunrise/sunset sky colors in the background            // meters. Above this altitude the wind (global wind force + sounding wind) fades smoothly to 0 at the top of the map
 };
 
@@ -5067,6 +5068,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalEffectsStartAlt'), guiControls.globalEffectsStartAlt / guiControls.simHeight);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalEffectsEndAlt'), guiControls.globalEffectsEndAlt / guiControls.simHeight);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windTaperStart'), guiControls.windCeilingAlt / guiControls.simHeight);
+    gl.uniform1f(gl.getUniformLocation(advectionProgram, 'shearSmoothing'), guiControls.shearSmoothing);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
     gl.useProgram(precipitationProgram);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'evapHeat'), guiControls.evapHeat);
@@ -5176,6 +5178,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       hint.domElement.parentElement.parentElement.title = 'Vitesse du son du simulateur à cette résolution : ' + Math.round(kmhPerRaw) +
         ' km/h. Au-delà de ~' + Math.round(kmhPerRaw * 0.6) + ' km/h le calcul devient instable. Pour des jet-streams plus rapides, réduisez la résolution verticale (cellules plus grandes).';
     }
+
+    fluidParams_folder.add(guiControls, 'shearSmoothing', 0.0, 1.0, 0.05)
+      .onChange(function() {
+        gl.useProgram(advectionProgram);
+        gl.uniform1f(gl.getUniformLocation(advectionProgram, 'shearSmoothing'), guiControls.shearSmoothing);
+      })
+      .name('Dégradé du vent');
 
     fluidParams_folder.add(guiControls, 'windCeilingAlt', 1000, guiControls.simHeight, 100)
       .onChange(function() {
