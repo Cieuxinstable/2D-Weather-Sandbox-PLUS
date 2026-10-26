@@ -26,7 +26,12 @@ void main()
     float curlX0Yp = texture(curlTex, texCoordX0Yp)[0];
 
     vec2 force = vec2(abs(curlX0Ym) - abs(curlX0Yp), abs(curlXpY0) - abs(curlXmY0));
-    float magnitude = length(force) + 0.0001;
+    // Normalize, but never amplify a gradient that is tiny compared to the vorticity itself: inside a smooth
+    // shear layer (e.g. the edges of a strong jet) |curl| barely changes, and normalizing that near-zero
+    // gradient produced a full-strength force in a random direction -- grid-scale noise that grew into the
+    // speckled bands seen with strong winds. Real small vortices (|curl| dropping off within a cell or two)
+    // still get the full confinement force.
+    float magnitude = max(length(force), 0.5 * abs(curl)) + 0.0001;
 
   //  if(magnitude != 0.0){ // prevent divide by 0
       force /= magnitude; // normalize vector
