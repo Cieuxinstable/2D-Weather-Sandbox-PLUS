@@ -68,5 +68,11 @@ void main()
 
     // Faded out with altitude (see windTaper() in common.glsl) so strong winds aloft never run into the rigid top boundary
     base[VX] += wind * uWindMultiplier * 0.000001 * windTaper(texCoord.y, windTaperStart);
+
+    // Soft speed limiter. Velocities are in cells/iteration and the sim's pressure waves travel 1 cell/iteration,
+    // so the explicit pressure step becomes unstable when the flow gets close to that: strong jet-stream winds
+    // then blow up into a saturated, speckled band. Below VEL_SOFT nothing changes; above it the excess is eased
+    // with tanh so the speed never exceeds VEL_MAX, with no hard kink.
+    base.xy = softLimitVelocity(base.xy);
   }
 }

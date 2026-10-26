@@ -110,6 +110,21 @@ float windTaper(float y, float taperStart)
   return 1.0 - smoothstep(taperStart, 1.0, y);
 }
 
+// Numerical stability limit for the flow speed, in cells/iteration (see the velocity shader). Mirrored in
+// app.js (SIM_VEL_MAX) for the sounding wind targets.
+#define VEL_SOFT 0.30
+#define VEL_MAX 0.45
+
+float softLimitSpeed(float v)
+{
+  float a = abs(v);
+  if (a <= VEL_SOFT)
+    return v;
+  return sign(v) * (VEL_SOFT + (VEL_MAX - VEL_SOFT) * tanh((a - VEL_SOFT) / (VEL_MAX - VEL_SOFT)));
+}
+
+vec2 softLimitVelocity(vec2 v) { return vec2(softLimitSpeed(v.x), softLimitSpeed(v.y)); }
+
 uint hash(uint x)
 {
   x += (x << 10u);
