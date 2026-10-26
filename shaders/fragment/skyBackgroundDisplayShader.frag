@@ -148,12 +148,18 @@ const vec3 CREPUSCULAR_COLOR = vec3(1.00, 0.74, 0.44);
 
 float horizonS; // screen-space height of the ground horizon, set in main()
 
+// NOTE for GPU portability: pow() with a negative base, atan(0, 0) and smoothstep() with edge0 >= edge1 are
+// undefined in GLSL and return NaN on many real GPUs (one NaN pixel then spreads over the whole screen through
+// the bloom blur). Squares use sq(), reversed ramps use 1.0 - smoothstep(), and derivatives are taken once at
+// the top of main(), outside any branch.
+float sq(float x) { return x * x; }
+
 vec2 skyLocal(vec2 uv, vec2 center) { return uv - center; }
 
 float sunGlow(vec2 uv, vec2 center, float radius, float sharpness)
 {
   float d = length(skyLocal(uv, center));
-  return exp(-pow(d / max(radius, 1e-5), 2.0) * sharpness);
+  return exp(-sq(d / max(radius, 1e-5)) * sharpness);
 }
 
 // Gold sun disc with soft halo and starburst rays, clipped at the horizon so it rises and sets gradually.
@@ -165,7 +171,7 @@ vec3 renderSun(vec2 uv, vec2 center, float scatter, out float emit)
     emit = 0.0;
     return vec3(0.0);
   }
-  float angle = atan(d.y, d.x);
+  float angle = atan(d.y, d.x + 1e-6); // offset: atan(0, 0) is undefined
   float horizonClip = smoothstep(horizonS - 0.002, horizonS + 0.002, uv.y);
 
   vec3 warmYellow = vec3(0.98, 0.78, 0.38);
@@ -180,7 +186,7 @@ vec3 renderSun(vec2 uv, vec2 center, float scatter, out float emit)
   float rays8 = pow(abs(cos(angle * 4.0 + 0.4)), 22.0);
   float raySeed = fract(sin(floor(angle * 7.64 + 10.0) * 127.1) * 43758.5453);
   float rayLen = mix(0.55, 1.0, raySeed);
-  float rayBand = smoothstep(0.20 * rayLen, 0.0, dist) * (1.0 - smoothstep(0.034, 0.080, dist));
+  float rayBand = (1.0 - smoothstep(0.0, 0.20 * rayLen, dist)) * (1.0 - smoothstep(0.034, 0.080, dist));
   float starburst = (rays12 * 0.85 + rays8 * 0.45) * rayBand;
 
   vec3 core_col = mix(vec3(0.98, 0.86, 0.55), vec3(0.95, 0.58, 0.18), scatter);
@@ -199,7 +205,7 @@ vec3 renderMoon(vec2 uv, vec2 center, float phase)
   vec2 p = skyLocal(uv, center);
   float dist = length(p);
   const float radius = 0.040;
-  float glow = exp(-pow(dist / 0.09, 2.0)) * 0.12;
+  float glow = exp(-sq(dist / 0.09)) * 0.12;
   if (dist > radius + 0.006)
     return vec3(0.75, 0.80, 0.95) * glow;
 
@@ -210,7 +216,7 @@ vec3 renderMoon(vec2 uv, vec2 center, float phase)
 }
 
 // Twinkling stars on a jittered world-anchored grid, a constant size on screen whatever the zoom.
-vec3 renderStars(vec2 uv)
+vec3 renderStars(vec2 uv, float pixel)
 {
   vec2 p = vec2(uv.x * aspectRatios.x, uv.y);
   const float gridSize = 0.035;
@@ -221,18 +227,19 @@ vec3 renderStars(vec2 uv)
   float r2 = fract(sin(dot(cell + 100.0, vec2(39.346, 57.123))) * 23421.1234);
   float r3 = fract(sin(dot(cell + 200.0, vec2(73.456, 12.789))) * 12345.6789);
   vec2 starPos = (cell + 0.2 + 0.6 * vec2(r2, r3)) * gridSize;
-  float pixel = fwidth(p.y);
   float size = pow(r2, 3.0);
   float radius = pixel * (0.9 + size * 1.6);
   float dist = length(p - starPos);
-  float twinkle = pow(sin(iterNum * (0.02 + r3 * 0.06) + r1 * 100.0) * 0.5 + 0.5, 2.0);
-  float brightness = (0.35 + size * 1.4) * smoothstep(radius, radius * 0.3, dist) * mix(0.45, 1.0, twinkle);
+  float twinkle = sq(sin(iterNum * (0.02 + r3 * 0.06) + r1 * 100.0) * 0.5 + 0.5);
+  float brightness = (0.35 + size * 1.4) * (1.0 - smoothstep(radius * 0.3, radius, dist)) * mix(0.45, 1.0, twinkle);
   return mix(vec3(1.0, 1.0, 0.95), vec3(0.82, 0.88, 1.0), r3) * brightness;
 }
 
 void main()
 {
   vec2 lightTexCoord = vec2(texCoord.x, min(texCoord.y + texelSize.y * 0.5, 1.0 - texelSize.y)); // limit vertical sample position to top of simulation
+
+  float texPerPixel = abs(dFdy(texCoord.y)); // sim height units per screen pixel, constant over the full-screen quad
 
   light = texture(lightTex, lightTexCoord)[0] / standardSunBrightness;
   ambientLight = texture(ambientLightTex, texCoord).rgb;
@@ -252,7 +259,7 @@ void main()
     // Screen-space frame: S in units of screen height, horizonS = screen height of the sim ground (texCoord.y = 0),
     // kept within the lower part of the screen so the sun stays visible when the camera looks high up.
     vec2 S = gl_FragCoord.xy / screenSize.y;
-    float texPerS = dFdy(texCoord.y) * screenSize.y;
+    float texPerS = texPerPixel * screenSize.y;
     horizonS = clamp(S.y - texCoord.y / max(texPerS, 1e-6), 0.04, 0.55);
     float screenAspect = screenSize.x / screenSize.y;
 
@@ -290,8 +297,8 @@ void main()
     mixedCol = mix(mixedCol, twilightSky, smoothstep(0.0, 1.0, twilightAmt));
 
     // Horizon haze: sunrise deep red -> gold -> pale; sunset pale -> gold -> burnt orange -> deep red
-    float horizonBand = exp(-pow(max(texCoord.y - SKY_HORIZON, 0.0) / 0.12, 2.0) * 0.7);
-    float sunProximity = exp(-pow((S.x - sunHoriz) * 0.8, 2.0));
+    float horizonBand = exp(-sq(max(texCoord.y - SKY_HORIZON, 0.0) / 0.12) * 0.7);
+    float sunProximity = exp(-sq((S.x - sunHoriz) * 0.8));
     float bandMask = horizonBand * (0.55 + sunProximity * 0.45);
 
     float riseT = smoothstep(0.02, 0.20, sunRiseAmount);
@@ -311,7 +318,7 @@ void main()
     // Crepuscular rays fanning out from the low sun
     vec2 rel = skyLocal(S, sunCenter);
     if ((twilightAmt > 0.15 || scatter > 0.3) && length(rel) < 3.0 && sunVisibility > 0.001) {
-      float ang = atan(rel.y, rel.x);
+      float ang = atan(rel.y, rel.x + 1e-6);
       float rays = pow(max(cos(ang * 4.0 + 0.2), 0.0), 18.0) + pow(max(cos(ang * 7.0 - 0.5), 0.0), 22.0) * 0.6;
       rays *= exp(-length(rel) * 1.2) * smoothstep(horizonS + 0.04, horizonS + 0.40, S.y);
       mixedCol += CREPUSCULAR_COLOR * rays * clamp(twilightAmt + scatter * 0.5, 0.0, 1.0) * sunVisibility * 0.35;
@@ -320,7 +327,7 @@ void main()
     // Stars, fading in through twilight, hidden near the ground haze
     float night = smoothstep(1.45, 1.70, absZenith);
     if (night > 0.0)
-      celestialCol += renderStars(texCoord) * night * smoothstep(0.05, 0.25, texCoord.y);
+      celestialCol += renderStars(texCoord, texPerPixel) * night * smoothstep(0.05, 0.25, texCoord.y);
 
     // Moon, opposite the sun
     float moonElev = clamp(absZenith - PI * 0.5, 0.0, PI * 0.5);
@@ -338,7 +345,7 @@ void main()
       vec3 glowEvening = mix(vec3(0.92, 0.72, 0.38), vec3(0.95, 0.42, 0.12), smoothstep(0.1, 0.85, setBlend));
       float aboveHorizon = smoothstep(horizonS - 0.01, horizonS + 0.02, S.y);
       float skyGlow = length(rel) < 1.0 ? sunGlow(S, sunCenter, 0.22, 0.55) * (0.20 + scatter * 0.42) : 0.0;
-      float wideGlow = exp(-pow(max(S.y - horizonS, 0.0) / 0.55, 2.0) * 0.28) * sunProximity * 0.18;
+      float wideGlow = exp(-sq(max(S.y - horizonS, 0.0) / 0.55) * 0.28) * sunProximity * 0.18;
       celestialCol += mix(glowEvening, glowMorning, morningW) * (skyGlow + wideGlow) * 0.62 * aboveHorizon * sunVisibility;
     }
 
@@ -375,5 +382,9 @@ void main()
   if (lum > cap)
     finalColor *= cap / lum;
 
-  fragmentColor = vec4(finalColor, 1.0);
+  // Last line of defense: never let a NaN/Inf leave this pass (it would black out the screen through bloom)
+  if (any(isnan(finalColor)) || any(isinf(finalColor)))
+    finalColor = mixedCol * (light + minShadowLight);
+
+  fragmentColor = vec4(max(finalColor, vec3(0.0)), 1.0);
 }
