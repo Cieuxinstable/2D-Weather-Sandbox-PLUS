@@ -162,6 +162,10 @@ vec3 renderSun(vec2 uv, vec2 center, float scatter, out float emit)
 {
   vec2 d = skyLocal(uv, center);
   float dist = length(d);
+  if (dist > 0.35) { // every term below is negligible this far out: skip the per-pixel atan/pow/exp work
+    emit = 0.0;
+    return vec3(0.0);
+  }
   float angle = atan(d.y, d.x);
   float horizonClip = smoothstep(SKY_HORIZON - 0.002, SKY_HORIZON + 0.002, uv.y);
 
@@ -299,8 +303,8 @@ void main()
     mixedCol += hazeCol * bandMask * hazeBoost * sunProximity * 0.38 * smoothstep(0.22, 0.60, scatter + twilightAmt * 0.3);
 
     // Crepuscular rays fanning out from the low sun
-    if (twilightAmt > 0.15 || scatter > 0.3) {
-      vec2 rel = skyLocal(texCoord, sunCenter);
+    vec2 rel = skyLocal(texCoord, sunCenter);
+    if ((twilightAmt > 0.15 || scatter > 0.3) && length(rel) < 3.0 && sunVisibility > 0.001) {
       float ang = atan(rel.y, rel.x);
       float rays = pow(max(cos(ang * 4.0 + 0.2), 0.0), 18.0) + pow(max(cos(ang * 7.0 - 0.5), 0.0), 22.0) * 0.6;
       rays *= exp(-length(rel) * 1.2) * smoothstep(SKY_HORIZON + 0.08, 0.45, texCoord.y);
@@ -327,7 +331,7 @@ void main()
       vec3 glowMorning = mix(vec3(0.95, 0.30, 0.10), vec3(0.92, 0.72, 0.38), smoothstep(0.02, 0.14, sunRiseAmount));
       vec3 glowEvening = mix(vec3(0.92, 0.72, 0.38), vec3(0.95, 0.42, 0.12), smoothstep(0.1, 0.85, setBlend));
       float aboveHorizon = smoothstep(SKY_HORIZON - 0.01, SKY_HORIZON + 0.02, texCoord.y);
-      float skyGlow = sunGlow(texCoord, sunCenter, 0.22, 0.55) * (0.20 + scatter * 0.42);
+      float skyGlow = length(rel) < 1.0 ? sunGlow(texCoord, sunCenter, 0.22, 0.55) * (0.20 + scatter * 0.42) : 0.0;
       float wideGlow = exp(-pow(max(texCoord.y - SKY_HORIZON, 0.0) / 0.55, 2.0) * 0.28) * sunProximity * 0.18;
       celestialCol += mix(glowEvening, glowMorning, morningW) * (skyGlow + wideGlow) * 0.62 * aboveHorizon * sunVisibility;
     }
