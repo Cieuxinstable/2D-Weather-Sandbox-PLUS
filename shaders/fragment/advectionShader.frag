@@ -49,6 +49,7 @@ uniform float waterTemperature;
 // indefinitely, since neither this nor the velocity shader's own wind cutoff erase momentum the fluid
 // already has.
 uniform float uWindMultiplier;
+uniform float shearSmoothing; // 0..1, "Dégradé du vent" setting: strength of the shear-triggered vertical momentum diffusion below
 uniform float windTaperStart; // normalized altitude above which wind fades out toward the top of the map, see windTaper() in common.glsl
 
 layout(location = 0) out vec4 base;
@@ -100,6 +101,22 @@ void main()
     // ADVECT AIR:
 
     base[VX] = bilerp(baseTex, fragCoord - velAtVx).x;
+
+    // Wind gradient ("Dégradé du vent"): vertical momentum diffusion that only switches on where the vertical
+    // shear of the horizontal wind is too sharp, like turbulent mixing in the real atmosphere. Without it a strong
+    // jet ends in a step (full speed -> calm within a few cells), which rolls up into Kelvin-Helmholtz billows that
+    // radiate waves up to the top of the map. Diffusing the step turns it into a smooth ramp. Ordinary convective
+    // flows stay below the threshold and are untouched. Coefficient capped at 0.2 (explicit diffusion is stable
+    // up to 0.5), skipped next to walls so it never acts as extra ground friction.
+    if (shearSmoothing > 0.0) {
+      ivec4 wallUp = texture(wallTex, texCoordX0Yp);
+      ivec4 wallDown = texture(wallTex, texCoordX0Ym);
+      if (wallUp[DISTANCE] != 0 && wallDown[DISTANCE] != 0) {
+        float shear = abs(cellX0Yp.x - cellX0Ym.x) * 0.5; // cells/iteration per cell
+        float mixing = clamp((shear - 0.012) * 6.0, 0.0, 0.2) * shearSmoothing;
+        base[VX] += mixing * (cellX0Yp.x + cellX0Ym.x - 2.0 * cellX0Y0.x);
+      }
+    }
     base[VY] = bilerp(baseTex, fragCoord - velAtVy).y;
 
     base[PRESSURE] = bilerpWall(baseTex, wallTex, fragCoord - velAtP)[PRESSURE];
