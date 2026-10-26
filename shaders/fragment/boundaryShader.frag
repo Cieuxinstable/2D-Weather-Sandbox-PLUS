@@ -200,7 +200,9 @@ void main()
     vec2 vortForceXmY0 = texture(vortForceTex, texCoordXmY0).xy;
     vec2 vortForceX0Ym = texture(vortForceTex, texCoordX0Ym).xy;
 
-    float velocityFactor = length(base.xy) * 0.1; // 0.2
+    // Capped: this term grows with the absolute wind speed, so strong background winds (jet streams) multiplied
+    // the confinement everywhere and amplified grid noise in shear layers. 0.01 keeps the usual convective look.
+    float velocityFactor = min(length(base.xy) * 0.1, 0.01); // 0.2
 
     // apply vorticity force
     base.xy += vec2(vortForceX0Y0.x + vortForceX0Ym.x, vortForceX0Y0.y + vortForceXmY0.y) * (vorticity + velocityFactor);
