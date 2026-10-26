@@ -227,13 +227,14 @@ void main()
     // progressively wrecked the map. Now:
     //  - horizontal wind relaxes very gently toward calm air above the wind ceiling, with the same smooth
     //    windTaper() profile the forcing itself uses, so forcing and damping never fight each other;
-    //  - only vertical motion is damped near the lid (top 10%), which is what absorbs gravity waves that
-    //    would otherwise reflect off the rigid top boundary, without crushing storm tops lower down.
+    //  - near the lid (top 20%, ramping in smoothly) vertical motion is damped to absorb gravity waves that a
+    //    strong jet radiates upward; otherwise they reflect off the rigid top boundary and come back as
+    //    alternating columns of reversed wind. Horizontal wind there is damped too, but only as far as it is
+    //    above the wind ceiling, so a player who disables the ceiling keeps their wind up to the top.
     float aboveWindCeiling = 1.0 - windTaper(texCoord.y, windTaperStart);
-    base[VX] -= base[VX] * aboveWindCeiling * 0.002;
-
-    float spongeCoeff = smoothstep(0.9, 1.0, texCoord.y);
-    base[VY] -= base[VY] * spongeCoeff * 0.01;
+    float spongeCoeff = smoothstep(0.8, 1.0, texCoord.y);
+    base[VX] -= base[VX] * aboveWindCeiling * (0.002 + spongeCoeff * 0.004);
+    base[VY] -= base[VY] * spongeCoeff * 0.02;
 
     // water[0] -= max(water[1] - 0.1, 0.0) * 0.0001; // Precipitation effect
     // drying !
