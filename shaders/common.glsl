@@ -100,6 +100,16 @@ float map_range(float value, float min1, float max1, float min2, float max2) { r
 
 float map_rangeC(float value, float min1, float max1, float min2, float max2) { return clamp(map_range(value, min1, max1, min2, max2), min(min2, max2), max(min2, max2)); }
 
+// Wind ceiling profile: 1.0 below taperStart (normalized altitude), easing smoothly down to 0.0 at the top
+// of the domain. Applied to the wind FORCING (global wind and sounding wind target), never as a hard brake
+// on the velocity field, so the flow aloft decays gradually instead of shearing against a damped layer.
+float windTaper(float y, float taperStart)
+{
+  if (taperStart >= 0.999)
+    return 1.0;
+  return 1.0 - smoothstep(taperStart, 1.0, y);
+}
+
 uint hash(uint x)
 {
   x += (x << 10u);
