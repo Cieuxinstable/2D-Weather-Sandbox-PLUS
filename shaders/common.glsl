@@ -121,7 +121,6 @@ float softLimitSpeed(float v, float velMax)
   return sign(v) * (soft + (velMax - soft) * tanh((a - soft) / (velMax - soft)));
 }
 
-vec2 softLimitVelocity(vec2 v, float velMax) { return vec2(softLimitSpeed(v.x, velMax), softLimitSpeed(v.y, velMax)); }
 
 uint hash(uint x)
 {

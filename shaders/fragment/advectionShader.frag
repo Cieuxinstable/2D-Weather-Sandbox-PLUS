@@ -109,8 +109,9 @@ void main()
     // wind along the edge of a strong jet) when Ri = N^2 / S^2 < 0.25, i.e. when the vertical wind shear S beats the
     // stable stratification N. In the real atmosphere turbulence then mixes the layer before billows can grow; here
     // momentum is diffused vertically in proportion to how far Ri is below 0.25, so mixing happens exactly where
-    // billows would form and nowhere else. A small minimum shear keeps calm or convective air with weak shear
-    // untouched. Coefficient capped at 0.25 (explicit diffusion is stable up to 0.5); skipped next to walls so it
+    // billows would form and nowhere else. Only stably stratified air is mixed (that is where billows form), so
+    // convective, unstable air -- storms, updrafts, gust fronts -- keeps the original dynamics; a small minimum
+    // shear also leaves weakly sheared air untouched. Coefficient capped at 0.25 (explicit diffusion is stable up to 0.5); skipped next to walls so it
     // never acts as extra ground friction.
     float billowDamping = 0.0; // > 0 in stably stratified layers that are shear-unstable, used for VY below
     if (shearSmoothing > 0.0) {
@@ -124,13 +125,14 @@ void main()
         float Ri = N2 / max(S * S, 1e-12);
         float unstable = clamp(1.0 - Ri / 0.25, 0.0, 1.0);                      // 0 at Ri >= 0.25, 1 at Ri <= 0
         float enoughShear = smoothstep(0.004, 0.010, S);                        // ~15 -> 35 km/h per km
-        float mixing = 0.25 * unstable * enoughShear * shearSmoothing;
+        float stableAir = smoothstep(0.0, 1e-5, N2); // only stably stratified layers: convection keeps its original dynamics
+        float mixing = 0.25 * unstable * enoughShear * stableAir * shearSmoothing;
         base[VX] += mixing * (cellX0Yp.x + cellX0Ym.x - 2.0 * cellX0Y0.x);
 
         // Billows also need vertical motion to roll up. Mixing momentum alone only slowed them down, so in layers
         // that are stably stratified (N^2 > 0) yet shear-unstable, vertical velocity is damped too. Convection lives
         // in unstable air (N^2 < 0) and is excluded, so storms and updrafts are not affected.
-        billowDamping = unstable * enoughShear * smoothstep(0.0, 1e-5, N2) * shearSmoothing;
+        billowDamping = unstable * enoughShear * stableAir * shearSmoothing;
       }
     }
     base[VY] = bilerp(baseTex, fragCoord - velAtVy).y;
@@ -261,12 +263,12 @@ void main()
     // progressively wrecked the map. Now:
     //  - horizontal wind relaxes very gently toward calm air above the wind ceiling, with the same smooth
     //    windTaper() profile the forcing itself uses, so forcing and damping never fight each other;
-    //  - near the lid (top 20%, ramping in smoothly) vertical motion is damped to absorb gravity waves that a
+    //  - near the lid (top 12%, ramping in smoothly) vertical motion is damped to absorb gravity waves that a
     //    strong jet radiates upward; otherwise they reflect off the rigid top boundary and come back as
     //    alternating columns of reversed wind. Horizontal wind there is damped too, but only as far as it is
     //    above the wind ceiling, so a player who disables the ceiling keeps their wind up to the top.
     float aboveWindCeiling = 1.0 - windTaper(texCoord.y, windTaperStart);
-    float spongeCoeff = smoothstep(0.8, 1.0, texCoord.y);
+    float spongeCoeff = smoothstep(0.88, 1.0, texCoord.y);
     base[VX] -= base[VX] * aboveWindCeiling * (0.002 + spongeCoeff * 0.004);
     base[VY] -= base[VY] * spongeCoeff * 0.02;
 

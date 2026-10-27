@@ -381,7 +381,7 @@ var windDisplayMultiplier = 10.0; // display mode 4 color scale, set from guiCon
 
 // Velocity unit conversions for the current grid: raw sim velocity is in cells/iteration, and the sim's pressure
 // waves ("speed of sound") travel exactly 1 cell/iteration, so the stable wind range depends on the cell size.
-const WIND_LIMIT_DEFAULT_RAW = 0.45; // safe default limit, cells/iteration
+const WIND_LIMIT_DEFAULT_RAW = 0.6; // default horizontal wind limit, cells/iteration (soft start at 2/3 of it)
 function kmhPerRawVelocity(simHeight, resY) { return (simHeight / resY) / (timePerIteration * 3600) * 3.6; }
 
 function sampleIsInvalid(s) { return isNaN(s.t) || isNaN(s.td) || isNaN(s.vel); }
@@ -989,6 +989,7 @@ const guiControls_default = {
   windCeilingAlt : 8000,
   windLimitKmh : 0,
   shearSmoothing : 1.0,
+  classicWind : false,              // true = original wind physics (no speed limiter, no Richardson mixing) for comparison
   windDisplayKmh : 0,               // horizontal wind speed shown at full color in display mode 4; 0 = automatic (original scale)             // 0..1: smooths overly sharp vertical wind shear (jet edges) to prevent Kelvin-Helmholtz waves                 // flow speed limit (km/h) for numerical stability; 0 = automatic safe value for the grid
   skyEffects : true,                // sun disc, moon, stars and sunrise/sunset sky colors in the background            // meters. Above this altitude the wind (global wind force + sounding wind) fades smoothly to 0 at the top of the map
 };
@@ -5033,9 +5034,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     const kmhPerRaw = kmhPerRawVelocity(guiControls.simHeight, sim_res_y);
     if (!(guiControls.windLimitKmh > 0))
       guiControls.windLimitKmh = Math.round(WIND_LIMIT_DEFAULT_RAW * kmhPerRaw);
-    const velMax = guiControls.windLimitKmh / kmhPerRaw;
+    const velMax = guiControls.classicWind ? 1e6 : guiControls.windLimitKmh / kmhPerRaw;
     gl.useProgram(velocityProgram);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'velMax'), velMax);
+    gl.useProgram(advectionProgram);
+    gl.uniform1f(gl.getUniformLocation(advectionProgram, 'shearSmoothing'), guiControls.classicWind ? 0.0 : guiControls.shearSmoothing);
     simVelTargetMax = velMax * 0.67;
     updateSoundingForcingUniforms(); // re-clamp the sounding wind targets to the new limit
   }
@@ -5070,7 +5073,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalEffectsStartAlt'), guiControls.globalEffectsStartAlt / guiControls.simHeight);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalEffectsEndAlt'), guiControls.globalEffectsEndAlt / guiControls.simHeight);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windTaperStart'), guiControls.windCeilingAlt / guiControls.simHeight);
-    gl.uniform1f(gl.getUniformLocation(advectionProgram, 'shearSmoothing'), guiControls.shearSmoothing);
+    gl.uniform1f(gl.getUniformLocation(advectionProgram, 'shearSmoothing'), guiControls.classicWind ? 0.0 : guiControls.shearSmoothing);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'cellHeightM'), guiControls.simHeight / sim_res_y);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'dtSeconds'), timePerIteration * 3600);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
@@ -5186,9 +5189,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     fluidParams_folder.add(guiControls, 'shearSmoothing', 0.0, 1.0, 0.05)
       .onChange(function() {
         gl.useProgram(advectionProgram);
-        gl.uniform1f(gl.getUniformLocation(advectionProgram, 'shearSmoothing'), guiControls.shearSmoothing);
+        gl.uniform1f(gl.getUniformLocation(advectionProgram, 'shearSmoothing'), guiControls.classicWind ? 0.0 : guiControls.shearSmoothing);
       })
       .name('Dégradé du vent');
+
+    fluidParams_folder.add(guiControls, 'classicWind')
+      .onChange(applyWindLimit) // re-uploads velMax and shearSmoothing for the chosen mode
+      .name('Physique du vent d\'origine');
 
     fluidParams_folder.add(guiControls, 'windCeilingAlt', 1000, guiControls.simHeight, 100)
       .onChange(function() {
