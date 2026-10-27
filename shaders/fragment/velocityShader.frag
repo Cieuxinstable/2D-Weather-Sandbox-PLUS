@@ -73,6 +73,7 @@ void main()
     // Soft speed limiter. Velocities are in cells/iteration and the sim's pressure waves travel 1 cell/iteration,
     // so the explicit pressure step becomes unstable when the flow gets close to that: strong jet-stream winds
     // then blow up into a saturated, speckled band. The limit is user-adjustable (it depends on the cell size).
-    base.xy = softLimitVelocity(base.xy, velMax);
+    // Horizontal component only: vertical motion (storm updrafts and downdrafts) keeps its original dynamics.
+    base[VX] = softLimitSpeed(base[VX], velMax);
   }
 }
