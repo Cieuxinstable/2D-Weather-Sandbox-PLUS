@@ -27,10 +27,14 @@ uniform float vorticity;
 uniform float waterEvaporation;
 uniform float landEvaporation;
 uniform float waterWeight;
-uniform vec4 initial_Tv[152];
 uniform bool allowCaves;
 
-float getInitialT(int y) { return initial_Tv[y / 4][y % 4]; }
+// Vertical profiles in a 1-row RGBA32F texture (x = cell row): r = initial temperature, g = sounding temperature,
+// b = sounding water, a = sounding wind. A texture instead of uniform arrays: 4 x 152 vec4 uniforms exceeded the
+// 256 fragment uniform vectors most phones allow, so the shader failed to compile there and the game never loaded.
+uniform sampler2D profileTex;
+vec4 profileAt(int y) { return texelFetch(profileTex, ivec2(clamp(y, 0, textureSize(profileTex, 0).x - 1), 0), 0); }
+float getInitialT(int y) { return profileAt(y).r; }
 
 uniform float sunAngle;
 
