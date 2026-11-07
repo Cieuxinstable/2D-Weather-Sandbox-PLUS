@@ -989,7 +989,10 @@ const guiControls_default = {
   windCeilingAlt : 8000,
   windLimitKmh : 0,
   shearSmoothing : 1.0,
-  classicWind : false,              // true = original wind physics (no speed limiter, no Richardson mixing) for comparison
+  classicWind : false,
+  newDecor : true,                  // procedural trees (bending, storm damage) and small houses instead of the texture strips
+  decorScale : 2.5,                 // visual size multiplier of trees and houses (real size is barely a few pixels at usual zooms)
+  stormDamage : true,               // strong surface winds damage trees and roofs (persistent, slowly recovers)              // true = original wind physics (no speed limiter, no Richardson mixing) for comparison
   windDisplayKmh : 0,               // horizontal wind speed shown at full color in display mode 4; 0 = automatic (original scale)             // 0..1: smooths overly sharp vertical wind shear (jet edges) to prevent Kelvin-Helmholtz waves                 // flow speed limit (km/h) for numerical stability; 0 = automatic safe value for the grid
   skyEffects : true,                // sun disc, moon, stars and sunrise/sunset sky colors in the background            // meters. Above this altitude the wind (global wind force + sounding wind) fades smoothly to 0 at the top of the map
 };
@@ -5096,6 +5099,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'hailMeltingRate'), guiControls.hailMeltingRate);
     gl.useProgram(postProcessingProgram);
     gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), guiControls.exposure);
+    applyDecorSettings();
+  }
+
+  // Trees, houses and storm damage: display options for the realistic view plus the damage switch in the boundary shader.
+  function applyDecorSettings()
+  {
+    const kmhPerRaw = kmhPerRawVelocity(guiControls.simHeight, sim_res_y);
+    gl.useProgram(realisticDisplayProgram);
+    gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'newDecor'), guiControls.newDecor ? 1.0 : 0.0);
+    gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'decorScale'), guiControls.decorScale);
+    gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'kmhPerRaw'), kmhPerRaw);
+    gl.useProgram(boundaryProgram);
+    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'kmhPerRaw'), kmhPerRaw);
+    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'stormDamage'), guiControls.stormDamage ? 1.0 : 0.0);
   }
 
   function setupDatGui(strGuiControls)
@@ -5604,6 +5621,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       applyWindDisplay();
       display_folder.add(guiControls, 'windDisplayKmh', 10, 400, 5).onChange(applyWindDisplay).name('Échelle du vent affiché (km/h)');
     }
+
+    display_folder.add(guiControls, 'newDecor').onChange(applyDecorSettings).name('Arbres et maisons réalistes');
+    display_folder.add(guiControls, 'decorScale', 1.0, 4.0, 0.1).onChange(applyDecorSettings).name('Taille du décor');
+    display_folder.add(guiControls, 'stormDamage').onChange(applyDecorSettings).name('Dégâts de tempête');
 
     display_folder.add(guiControls, 'skyEffects')
       .onChange(function() {

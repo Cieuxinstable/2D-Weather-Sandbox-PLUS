@@ -51,6 +51,10 @@ uniform float displayVectorField;
 
 uniform float iterNum;
 
+uniform float newDecor;   // 1 = procedural trees and houses (with storm damage), 0 = original texture strips
+uniform float decorScale; // visual size multiplier of trees and houses (1 = real size)
+uniform float kmhPerRaw;  // km/h per raw velocity unit, for wind bending
+
 out vec4 fragmentColor;
 
 #include "common.glsl"
@@ -276,6 +280,247 @@ vec4 getAirColor(vec2 fragCoordIn)
 
 float rand(float n) { return fract(sin(n) * 43758.5453123); }
 
+// ===================== Procedural trees and houses =====================
+// Drawn per pixel in the few cells just above the ground. Each object sits in a fixed "slot" along x (world
+// anchored), with its kind, size and resistance derived from a hash of the slot index. The ground state of
+// the column it stands on (type, vegetation, snow, storm damage stored in the surface cell's CLOUD channel by
+// the boundary shader) decides what is drawn. Only 3 columns are sampled per pixel, so the cost stays small.
+
+struct Column {
+  bool valid;      // false when this row is inside the ground at that column
+  float groundTop; // absolute y (cells) of the ground surface
+  int type;
+  float vegetation;
+  float damage;
+  float snow;
+  float soilMoisture;
+};
+
+Column sampleColumn(float colX, float row)
+{
+  Column c;
+  vec2 tc = vec2(colX + 0.5, row + 0.5) * texelSize;
+  ivec4 w = texture(wallTex, tc);
+  c.valid = w[DISTANCE] != 0 && w[VERT_DISTANCE] >= 1 && w[VERT_DISTANCE] < 10;
+  if (!c.valid)
+    return c;
+  int vd = w[VERT_DISTANCE];
+  c.groundTop = row - float(vd - 1);
+  vec2 tcS = tc - vec2(0.0, float(vd) * texelSize.y);
+  ivec4 ws = texture(wallTex, tcS);
+  vec4 wa = texture(waterTex, tcS);
+  c.type = ws[TYPE];
+  c.vegetation = float(ws[VEGETATION]);
+  c.damage = clamp(wa[CLOUD], 0.0, 1.0);
+  c.snow = wa[SNOW];
+  c.soilMoisture = wa[SOIL_MOISTURE];
+  return c;
+}
+
+float slotHash(float i, float k) { return fract(sin(i * 127.1 + k * 311.7) * 43758.5453); }
+
+// Signed horizontal offset of a stem at height v (0..h), bent by the wind: quadratic deflection like a cantilever.
+float stemLean(float v, float h, float bend) { return bend * h * (v / h) * (v / h); }
+
+// Returns rgb + alpha of the tree covering point (dx, v) in meters relative to the tree base, or alpha 0.
+vec4 drawTree(float dx, float v, float h, float kind, float bend, float damage, float seed, float pxM, Column col)
+{
+  vec3 bark = pow(vec3(0.33, 0.24, 0.16), vec3(GAMMA));
+  float n = texture(noiseTex, vec2(dx, v) * 0.08 + seed * 7.3).r; // leafy texture
+  vec3 leaf = kind < 0.6 ? mix(vec3(0.07, 0.20, 0.05), vec3(0.16, 0.34, 0.09), n)    // broadleaf
+                         : mix(vec3(0.03, 0.12, 0.05), vec3(0.07, 0.20, 0.09), n);   // conifer
+  float dry = max(0.5 - col.soilMoisture * (0.5 / fullGreenSoilMoisture), 0.0);
+  leaf = mix(leaf, dryGrassCol * 0.6, dry * 0.6);
+  float snowCover = clamp(col.snow / fullWhiteSnowHeight, 0.0, 1.0);
+
+  bool conifer = kind >= 0.6;
+  bool poplar = kind >= 0.45 && kind < 0.6;
+
+  // Damage stages (per-tree resistance already applied): 0.25 leaves torn, 0.55 branches broken, 0.8 trunk snapped
+  bool snapped = damage > 0.8;
+  float standH = snapped ? h * (conifer ? 0.55 : 0.35) : h;
+
+  // fallen top lying on the ground, toward a fixed side for this tree
+  if (snapped) {
+    float dir = seed > 0.5 ? 1.0 : -1.0;
+    float along = dx * dir;
+    float logLen = h - standH;
+    if (along > 0.0 && along < logLen && v < max(h * 0.05, pxM)) {
+      float t = along / logLen;
+      if (t > 0.55 && !conifer && n > 0.45) return vec4(mix(leaf, bark, 0.5), 1.0); // broken crown on the ground
+      return vec4(bark, 1.0);
+    }
+  }
+
+  float lean = stemLean(min(v, standH), h, bend);
+  float u = dx - lean;
+
+  // trunk
+  float trunkTop = conifer ? standH : min(standH, h * (poplar ? 0.9 : 0.62));
+  float trunkW = max(h * (conifer ? 0.03 : 0.04) * (1.25 - 0.6 * v / h), pxM * 0.7);
+  if (v < trunkTop && abs(u) < trunkW * 0.5) {
+    if (snapped && v > standH - max(0.4, pxM)) return vec4(pow(vec3(0.85, 0.75, 0.55), vec3(GAMMA)), 1.0); // splintered wood
+    return vec4(bark, 1.0);
+  }
+  if (snapped && !conifer) return vec4(0.0); // broadleaf crown is gone with the trunk
+
+  float leafLoss = clamp((damage - 0.25) / 0.5, 0.0, 1.0);
+
+  if (conifer) {
+    float crownBase = h * 0.18;
+    if (v < crownBase || v > standH) return vec4(0.0);
+    float f = (v - crownBase) / (h - crownBase);
+    float halfW = h * 0.2 * (1.0 - f) * (0.72 + 0.28 * fract(v / (h * 0.13))) + pxM * 0.5; // tiered silhouette
+    halfW *= 1.0 - leafLoss * 0.35;
+    if (abs(u) < halfW && n > leafLoss * 0.55) {
+      vec3 c = leaf;
+      if (snowCover > 0.0 && fract(v / (h * 0.13)) > 0.75) c = mix(c, vec3(1.0), snowCover); // snow on the tiers
+      return vec4(c, 1.0);
+    }
+    return vec4(0.0);
+  }
+
+  // broadleaf / poplar crown: a few lobes with a noisy edge, thinning out as leaves are torn off
+  vec2 cr = poplar ? vec2(0.13, 0.36) * h : vec2(0.30, 0.23) * h;
+  float cy = poplar ? h * 0.6 : h * 0.68;
+  float shrink = 1.0 - leafLoss * 0.45;
+  float d = 2.0;
+  for (int k = -1; k <= 1; k++) {
+    float kx = float(k) * cr.x * 0.55;
+    float ky = cy - abs(float(k)) * cr.y * 0.35;
+    float lean2 = stemLean(ky, h, bend);
+    vec2 r = cr * (k == 0 ? 1.0 : 0.7) * shrink;
+    vec2 q = vec2(dx - lean2 - kx, v - ky) / max(r, vec2(pxM));
+    d = min(d, length(q));
+  }
+  if (d < 1.0 - 0.25 * n && n > leafLoss * 0.75) {
+    vec3 c = leaf;
+    c = mix(c, vec3(0.95), snowCover * smoothstep(0.3, 1.0, v / h) * 0.6);
+    return vec4(c, 1.0);
+  }
+  // bare branches show through when the crown is thinned or broken
+  if (leafLoss > 0.0 && d < 1.0) {
+    float lean3 = stemLean(v, h, bend);
+    float bx = abs(dx - lean3);
+    float branch = abs(bx - (v - trunkTop * 0.85) * 0.9);
+    if (v > trunkTop * 0.8 && branch < max(h * 0.012, pxM * 0.6) && damage < 0.65) return vec4(bark, 1.0);
+  }
+  return vec4(0.0);
+}
+
+// Returns rgb + alpha of the house covering point (dx, v) in meters relative to its base center; lit = window lit at night.
+vec4 drawHouse(float dx, float v, float kind, float damage, float seed, float pxM, Column col, bool night, out bool lit)
+{
+  lit = false;
+  bool longere = kind > 0.6 && kind <= 0.85;
+  bool block = kind > 0.85;
+  float w = (block ? 14.0 : longere ? 18.0 : 11.0) * decorScale;
+  float wallH = (block ? 10.0 : longere ? 4.5 : 5.5) * decorScale;
+  float roofH = (block ? 0.8 : 4.0) * decorScale;
+  float halfW = w * 0.5;
+
+  vec3 wallCol = pow(block ? vec3(0.80, 0.78, 0.74) : longere ? vec3(0.66, 0.60, 0.50) : vec3(0.88, 0.82, 0.70), vec3(GAMMA));
+  vec3 roofCol = pow(block ? vec3(0.40, 0.40, 0.42) : (seed > 0.4 ? vec3(0.58, 0.25, 0.17) : vec3(0.30, 0.32, 0.35)), vec3(GAMMA));
+  float snowCover = clamp(col.snow / fullWhiteSnowHeight, 0.0, 1.0);
+
+  if (abs(dx) < halfW && v < wallH) {
+    // windows on a 3 m grid, door in the middle of houses
+    float gx = fract((dx + halfW) / (3.0 * decorScale));
+    float gy = fract(v / (3.0 * decorScale));
+    bool door = !block && abs(dx) < 0.6 * decorScale && v < 2.2 * decorScale;
+    if (door) return vec4(pow(vec3(0.30, 0.20, 0.13), vec3(GAMMA)), 1.0);
+    if (gx > 0.35 && gx < 0.72 && gy > 0.35 && gy < 0.78 && abs(dx) < halfW - 1.0 * decorScale) {
+      float wid = floor((dx + halfW) / (3.0 * decorScale)) + floor(v / (3.0 * decorScale)) * 17.0;
+      if (night && slotHash(seed * 91.0 + wid, 3.0) > 0.35) { lit = true; return vec4(pow(vec3(1.0, 0.80, 0.45), vec3(GAMMA)), 1.0); }
+      return vec4(pow(night ? vec3(0.08, 0.10, 0.14) : vec3(0.36, 0.46, 0.55), vec3(GAMMA)), 1.0);
+    }
+    return vec4(wallCol, 1.0);
+  }
+  float rv = v - wallH;
+  if (rv >= 0.0 && rv < roofH) {
+    float roofHalf = block ? halfW + 0.3 * decorScale : (halfW + 0.6 * decorScale) * (1.0 - rv / roofH);
+    if (abs(dx) < max(roofHalf, pxM * 0.5)) {
+      float holes = clamp((damage - 0.25) / 0.6, 0.0, 1.0);
+      float n = texture(noiseTex, vec2(dx, rv) * 0.35 + seed * 5.1).r;
+      if (n < holes * 0.7) return vec4(pow(vec3(0.22, 0.15, 0.10), vec3(GAMMA)), 1.0); // torn-off tiles: rafters show
+      if (snowCover > 0.0 && rv > roofH - (block ? roofH : 0.6 * decorScale) - (roofHalf - abs(dx)) * 0.15) return vec4(mix(roofCol, vec3(1.0), snowCover), 1.0);
+      return vec4(roofCol, 1.0);
+    }
+  }
+  if (!block && !longere && rv > roofH * 0.3 && rv < roofH * 0.9 && abs(dx - halfW * 0.45) < 0.45 * decorScale) return vec4(pow(vec3(0.45, 0.32, 0.25), vec3(GAMMA)), 1.0); // chimney
+  return vec4(0.0);
+}
+
+// Trees and houses covering this pixel. Returns alpha 0 when there is nothing here.
+// Ground columns (x-2 .. x+2) are read lazily: only when an object standing on them could reach this pixel.
+Column decorCols[5];
+bool decorHave[5];
+
+Column decorColumn(int ci, float colX, float row)
+{
+  if (!decorHave[ci]) {
+    decorCols[ci] = sampleColumn(colX + float(ci - 2), row);
+    decorHave[ci] = true;
+  }
+  return decorCols[ci];
+}
+
+vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
+{
+  lit = false;
+  isTree = false;
+  float row = floor(frag.y);
+  float pxM = fwidth(frag.x) * cellHeight; // meters per screen pixel
+  float colX = floor(frag.x);
+  for (int k = 0; k < 5; k++) decorHave[k] = false;
+
+  // houses first (in front of trees)
+  float houseSp = 24.0 * decorScale / cellHeight;                   // slot spacing in cells
+  float houseReach = min(10.0 * decorScale / cellHeight, 2.0);      // max half width of a house, in cells
+  float hs0 = floor((frag.x - houseReach) / houseSp - 0.5), hs1 = floor((frag.x + houseReach) / houseSp + 0.5);
+  for (int i = 0; i < 12; i++) {
+    float s = hs0 + float(i);
+    if (s > hs1) break;
+    float xc = (s + 0.5 + (slotHash(s, 1.0) - 0.5) * 0.3) * houseSp;
+    int ci = int(floor(xc) - colX) + 2;
+    if (ci < 0 || ci > 4 || slotHash(s, 2.0) < 0.15) continue;
+    Column c = decorColumn(ci, colX, row);
+    if (!c.valid || c.type != WALLTYPE_URBAN) continue;
+    vec4 hc = drawHouse((frag.x - xc) * cellHeight, (frag.y - c.groundTop) * cellHeight, slotHash(s, 3.0), c.damage * (0.8 + 0.4 * slotHash(s, 4.0)), slotHash(s, 5.0), pxM, c, night, lit);
+    if (hc.a > 0.0) return hc;
+  }
+
+  // trees
+  float windKmh = base.x * kmhPerRaw;
+  float treeSp = 8.0 * decorScale / cellHeight;
+  float treeReach = min(13.0 * decorScale / cellHeight, 2.0); // max crown radius + bend, in cells
+  float ts0 = floor((frag.x - treeReach) / treeSp - 0.5), ts1 = floor((frag.x + treeReach) / treeSp + 0.5);
+  for (int i = 0; i < 24; i++) {
+    float s = ts0 + float(i);
+    if (s > ts1) break;
+    float xc = (s + 0.5 + (slotHash(s, 11.0) - 0.5) * 0.8) * treeSp;
+    int ci = int(floor(xc) - colX) + 2;
+    if (ci < 0 || ci > 4) continue;
+    Column c = decorColumn(ci, colX, row);
+    if (!c.valid) continue;
+    bool land = c.type == WALLTYPE_LAND;
+    bool urbanTree = c.type == WALLTYPE_URBAN;
+    if (!land && !urbanTree) continue;
+    float density = clamp((c.vegetation - 50.0) / 77.0, 0.0, 1.0); // vegetation 50..127 = trees
+    if (urbanTree) density *= 0.35;
+    if (slotHash(s, 12.0) > density) continue;
+    float h = (14.0 + 20.0 * slotHash(s, 13.0)) * (0.6 + 0.4 * density) * decorScale;
+    float kind = slotHash(s, 14.0);
+    float stiff = kind >= 0.6 ? 0.8 : kind >= 0.45 ? 1.3 : 1.0; // conifers stiffer, poplars more flexible
+    float flutter = sin(iterNum * 0.03 + s * 1.7) * 0.03 * min(abs(windKmh) / 40.0, 1.0);
+    float bend = clamp(sign(windKmh) * pow(abs(windKmh) / 130.0, 2.0) * 0.45 * stiff + flutter, -0.6, 0.6);
+    float resist = 0.75 + 0.5 * slotHash(s, 15.0);
+    vec4 tc = drawTree((frag.x - xc) * cellHeight, (frag.y - c.groundTop) * cellHeight, h, kind, bend, c.damage / resist, slotHash(s, 16.0), pxM, c);
+    if (tc.a > 0.0) { isTree = true; return tc; }
+  }
+  return vec4(0.0);
+}
+
 void main()
 {
   vec2 bndFragCoord = vec2(fragCoord.x, clamp(fragCoord.y, 0., resolution.y)); // bound y within range
@@ -447,7 +692,23 @@ void main()
 #define maxBuildingHeight 400.  // height in meters upto wich the urban texture reaches
 
 
-      if (wallX0Ym[TYPE] == WALLTYPE_URBAN) {
+      bool decorDrawn = false;
+      // tallest object: trees up to 34 m, apartment blocks ~11 m, times decorScale -> skip cells above it
+      float decorTopCells = 34.0 * decorScale / cellHeight + 1.0;
+      if (newDecor > 0.5 && wall[DISTANCE] != 0 && wall[VERT_DISTANCE] >= 1 && float(wall[VERT_DISTANCE]) <= decorTopCells) {
+        bool decorLit, decorTree;
+        vec4 dc = drawDecor(fragCoord, nightTime, decorLit, decorTree);
+        if (dc.a > 0.0) {
+          color = dc.rgb;
+          opacity = 1.0;
+          shadowLight = decorLit ? 1.0 : minShadowLight; // lit windows glow at night, everything else follows sunlight
+          decorDrawn = true;
+        }
+      }
+
+      if (newDecor > 0.5) {
+        // procedural decor replaces the urban skyline and forest strips (industrial keeps its texture)
+      } else if (wallX0Ym[TYPE] == WALLTYPE_URBAN) {
 
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
 
@@ -475,7 +736,8 @@ void main()
           color = texCol.rgb;
           opacity = texCol.a;
         }
-      } else if (wallX0Ym[TYPE] == WALLTYPE_INDUSTRIAL) {
+      }
+      if (wallX0Ym[TYPE] == WALLTYPE_INDUSTRIAL) {
 
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
 
@@ -525,8 +787,12 @@ void main()
         treeTexCoordY *= 0.72;                              // Trees only go up to 72% of the texture height
         treeTexCoordY = 1. - treeTexCoordY;                 // texture is upside down
 
-        vec4 texCol;
-        if (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_URBAN) { // land below
+        vec4 texCol = vec4(0.0);
+        if (newDecor > 0.5 && wallX0Ym[TYPE] != WALLTYPE_FIRE) {
+          vec4 surfaceWater = texture(waterTex, texCoordX0Ym);
+          if (surfaceWater[SNOW] * 0.01 / cellHeight > heightAboveGround && !decorDrawn)
+            texCol = vec4(vec3(1.), 1.); // snow layer on the ground
+        } else if (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_URBAN) { // land below
           vec4 surfaceWater = texture(waterTex, texCoordX0Ym);                     // snow on land below
           float snow = surfaceWater[SNOW];
           if (snow * 0.01 / cellHeight > heightAboveGround)
