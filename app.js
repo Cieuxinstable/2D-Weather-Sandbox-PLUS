@@ -3066,6 +3066,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       }
     }
 
+    // Jump straight to the target (used while a finger drags the map, so the view does not lag behind it).
+    snapToTarget()
+    {
+      this.changeCurXpos(this.tarXpos - this.curXposLin);
+      this.curYpos = this.tarYpos;
+      this.curZoom = this.tarZoom;
+      this.#Xvel = 0;
+      this.#Yvel = 0;
+      this.#Zvel = 0;
+    }
+
     changeViewZoom(change)
     {
       this.tarZoom *= 1.0 + change;
@@ -6117,13 +6128,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     const toolButtons = [];
     const refreshTools = () => { for (const [b, t] of toolButtons) b.classList.toggle('active', guiControls.tool === t); };
     for (const [icon, title, tool] of toolDefs) {
-      const b = makeBtn(tools, icon, title, () => { guiControls.tool = tool; refreshTools(); });
+      const b = makeBtn(tools, icon, title, () => {
+        guiControls.tool = tool;
+        refreshTools();
+        showMobileToast(tool == 'TOOL_NONE' ? '👁 1 doigt déplace la carte · 2 doigts zooment' : title + ' : 1 doigt peint · 2 doigts déplacent et zooment');
+      });
       toolButtons.push([ b, tool ]);
     }
     const invertBtn = makeBtn(tools, '−', 'Inverser l\'outil (retirer, refroidir, assécher)', (b) => {
       ctrlPressed = !ctrlPressed;
       b.classList.toggle('active', ctrlPressed);
     });
+    guiControls.tool = 'TOOL_NONE'; // start in look mode: one finger moves the map
     refreshTools();
     setInterval(refreshTools, 1000); // stays in sync if the tool is changed from the advanced menu
 
@@ -6262,7 +6278,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => toast.classList.remove('show'), 1400);
     }
-    showMobileToast('1 doigt : outil · 2 doigts : zoom et déplacement');
+    showMobileToast('👁 Regarder : 1 doigt déplace la carte, double tap zoome · 2 doigts : zoom');
   }
 
   // Progress bar shown while startWindReset() fades guiControls.wind to 0.
@@ -7097,11 +7113,96 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   var previousTouches;
 
 
+  // ---- Touch navigation, like a map app:
+  //  - "look" tool (TOOL_NONE): one finger drags the map, double tap zooms in;
+  //  - any other tool: one finger paints (after a short delay, so a second finger landing for a pinch never paints);
+  //  - two fingers: pinch to zoom and drag to move at the same time, keeping the point under the fingers fixed.
+  // The camera follows the fingers directly during a gesture (no spring lag).
+  const touchState = {mode : 'none', startTime : 0, lastX : 0, lastY : 0, lastMidX : 0, lastMidY : 0, lastSep : 0, lastTapTime : 0, lastTapX : 0, lastTapY : 0};
+
+  // Screen point (CSS px) <-> view coordinates, the same mapping the mouse drag uses (see the mousemove handler).
+  function screenToWorld(px, py, zoom)
+  {
+    return {x : (px - canvas.width / 2) * 2 / (canvas.width * zoom) - cam.tarXpos, y : (canvas.height / 2 - py) * 2 / (canvas.width * zoom) - cam.tarYpos};
+  }
+
+  // Moves/zooms the camera so that the world point that was under (fromX, fromY) at the current zoom ends up under
+  // (toX, toY) at newZoom.
+  function dragAndZoomCamera(fromX, fromY, toX, toY, newZoom)
+  {
+    const world = screenToWorld(fromX, fromY, cam.tarZoom);
+    const z = clamp(newZoom, 0.5, 35.0 * sim_aspect);
+    cam.tarZoom = z;
+    cam.tarXpos = (toX - canvas.width / 2) * 2 / (canvas.width * z) - world.x;
+    cam.tarYpos = (canvas.height / 2 - toY) * 2 / (canvas.width * z) - world.y;
+    cam.changeViewXpos(0); // apply the camera's own limits
+    cam.changeViewYpos(0);
+    cam.snapToTarget();
+  }
+
+  function touchMid(t) { return {x : (t[0].clientX + t[1].clientX) / 2, y : (t[0].clientY + t[1].clientY) / 2, sep : Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)}; }
+
   canvas.addEventListener('touchstart', function(event) {
     event.preventDefault();
-    if (event.touches.length == 1) {
-      mouseX = event.touches[0].clientX;
-      mouseY = event.touches[0].clientY;
+    const t = event.touches;
+    if (t.length == 1) {
+      mouseX = t[0].clientX;
+      mouseY = t[0].clientY;
+      touchState.lastX = mouseX;
+      touchState.lastY = mouseY;
+      touchState.startTime = performance.now();
+      touchState.mode = SETUP_MODE ? 'setup' : (guiControls.tool == 'TOOL_NONE' ? 'pan' : 'paintPending');
+
+      // double tap with the look tool: zoom x2 around the tap (smooth, through the camera spring)
+      if (touchState.mode == 'pan' && touchState.startTime - touchState.lastTapTime < 300 && Math.hypot(mouseX - touchState.lastTapX, mouseY - touchState.lastTapY) < 30) {
+        cam.zoomAtMousePos(1.0);
+        touchState.lastTapTime = 0;
+      } else {
+        touchState.lastTapTime = touchState.startTime;
+        touchState.lastTapX = mouseX;
+        touchState.lastTapY = mouseY;
+      }
+    } else if (t.length == 2) {
+      leftMousePressed = false; // a pinch never paints
+      const m = touchMid(t);
+      touchState.mode = 'pinch';
+      touchState.lastMidX = m.x;
+      touchState.lastMidY = m.y;
+      touchState.lastSep = m.sep;
+    }
+  }, {passive : false});
+
+  canvas.addEventListener('touchmove', function(event) {
+    event.preventDefault();
+    const t = event.touches;
+
+    if (t.length == 1) {
+      const x = t[0].clientX, y = t[0].clientY;
+      if (touchState.mode == 'pan') {
+        dragAndZoomCamera(touchState.lastX, touchState.lastY, x, y, cam.tarZoom);
+      } else if (touchState.mode == 'paintPending' && performance.now() - touchState.startTime > 90) {
+        touchState.mode = 'paint';
+      }
+      if (touchState.mode == 'paint')
+        leftMousePressed = true; // treat just like holding the left mouse button
+      if (touchState.mode != 'pan') {
+        mouseX = x;
+        mouseY = y;
+      }
+      touchState.lastX = x;
+      touchState.lastY = y;
+    } else if (t.length == 2) {
+      const m = touchMid(t);
+      if (touchState.mode != 'pinch') { // second finger not reported by touchstart on some browsers
+        touchState.mode = 'pinch';
+        leftMousePressed = false;
+      } else if (touchState.lastSep > 0 && m.sep > 0)
+        dragAndZoomCamera(touchState.lastMidX, touchState.lastMidY, m.x, m.y, cam.tarZoom * (m.sep / touchState.lastSep));
+      touchState.lastMidX = m.x;
+      touchState.lastMidY = m.y;
+      touchState.lastSep = m.sep;
+      mouseX = m.x;
+      mouseY = m.y;
     }
   }, {passive : false});
 
@@ -7109,58 +7210,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     event.preventDefault();
     if (event.touches.length == 0) { // all fingers released
       leftMousePressed = false;
-      //   }else if(event.touches.length == 1){
-      wasTwoFingerTouchBefore = false;
-      previousTouches = null;
-
-      if (SETUP_MODE) {
+      if (SETUP_MODE)
         startSimulation();
-      }
+      touchState.mode = 'none';
+    } else if (event.touches.length == 1 && touchState.mode == 'pinch') {
+      // one finger left after a pinch: keep moving the map with it, never paint
+      touchState.mode = 'pan';
+      touchState.lastX = event.touches[0].clientX;
+      touchState.lastY = event.touches[0].clientY;
     }
   }, {passive : false});
-
-  canvas.addEventListener('touchmove', function(event) {
-    event.preventDefault();
-
-    if (event.touches.length == 1) { // single finger
-
-      // console.log(event.touches[0]);
-      if (!wasTwoFingerTouchBefore) {
-        leftMousePressed = true; // treat just like holding left mouse button
-        mouseX = event.touches[0].clientX;
-        mouseY = event.touches[0].clientY;
-      }
-    } else {
-      leftMousePressed = false;
-
-      if (event.touches.length == 2 && previousTouches && previousTouches.length == 2) // 2 finger zoom
-      {
-        mouseX = (event.touches[0].clientX + event.touches[1].clientX) / 2.0;          // position inbetween two fingers
-        mouseY = (event.touches[0].clientY + event.touches[1].clientY) / 2.0;
-
-        let prevXsep = previousTouches[0].clientX - previousTouches[1].clientX;
-        let prevYsep = previousTouches[0].clientY - previousTouches[1].clientY;
-        let prevSep = Math.sqrt(prevXsep * prevXsep + prevYsep * prevYsep);
-
-        let curXsep = event.touches[0].clientX - event.touches[1].clientX;
-        let curYsep = event.touches[0].clientY - event.touches[1].clientY;
-        let curSep = Math.sqrt(curXsep * curXsep + curYsep * curYsep);
-
-        cam.zoomAtMousePos((curSep / prevSep) - 1.0);
-
-        if (wasTwoFingerTouchBefore) {
-          cam.changeViewXpos(((mouseX - prevMouseX) / cam.curZoom / canvas.width) * 2.0);
-          cam.changeViewYpos(((mouseY - prevMouseY) / cam.curZoom / canvas.width) * 2.0);
-        }
-        wasTwoFingerTouchBefore = true;
-        prevMouseX = mouseX;
-        prevMouseY = mouseY;
-      }
-    }
-
-    previousTouches = event.touches;
-  }, {passive : false});
-
 
   var lastBpressTime;
 
