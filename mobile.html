@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="fr" translate="no">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="google" content="notranslate" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#060d1a" />
+    <title>2D Weather Sandbox · Mobile</title>
+    <script>window.MOBILE_MODE = true;</script>
+    <script type="text/javascript" src="libraries/dat.gui.min.js"></script>
+    <script type="text/javascript" src="libraries/pako.min.js"></script>
+    <script type="text/javascript" src="libraries/chart.js"></script>
+    <script type="text/javascript" src="libraries/chartjs-adapter-date-fns.js"></script>
+    <script type="text/javascript" src="app.js"></script>
+    <link rel="shortcut icon" type="image/x-icon" href="favicon.ico">
+    <style>
+        :root {
+            --bg: #060d1a;
+            --panel: rgba(16, 26, 46, 0.78);
+            --border: rgba(255, 255, 255, 0.16);
+            --text: #ffffff;
+            --muted: rgba(226, 236, 255, 0.7);
+            --accent: #5aa9ff;
+            --ok: #6bdc7c;
+            --danger: #ff6b6b;
+            --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        }
+
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+        html, body {
+            margin: 0;
+            height: 100%;
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font);
+            overflow: hidden;
+            overscroll-behavior: none;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        #mainCanvas { position: fixed; top: 0; left: 0; z-index: 0; display: none; }
+        #graphCanvas { position: fixed; z-index: 1; display: none; }
+
+        /* ---------- Home (landscape) ---------- */
+        #IntroScreen {
+            position: fixed;
+            inset: 0;
+            display: grid;
+            grid-template-columns: 1.15fr 1fr;
+            gap: 14px;
+            padding: max(12px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+            background:
+                radial-gradient(120% 80% at 70% 120%, rgba(255, 170, 90, 0.20), transparent 60%),
+                linear-gradient(180deg, #050b18 0%, #0f2442 55%, #2b4d78 100%);
+            overflow-y: auto;
+            touch-action: pan-y;
+        }
+
+        .m-col { display: grid; align-content: center; gap: 10px; min-width: 0; }
+
+        h1 {
+            margin: 0;
+            font-size: clamp(1.4rem, 5.2vh, 2.3rem);
+            line-height: 1;
+            letter-spacing: -0.5px;
+        }
+
+        h1 span { color: #ffd36b; }
+
+        .m-sub { margin: 0; color: var(--muted); font-size: 0.85rem; }
+
+        .m-card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 10px 12px;
+            display: grid;
+            gap: 8px;
+        }
+
+        .m-label { font-size: 0.7rem; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+
+        .m-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+        #IntroScreen input[type="text"],
+        #IntroScreen input[type="date"],
+        #IntroScreen select {
+            width: 100%;
+            padding: 9px 10px;
+            font: inherit;
+            font-size: 16px; /* >= 16px: no auto-zoom on iOS */
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.07);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color-scheme: dark;
+        }
+
+        #IntroScreen .m-row input[type="date"],
+        #IntroScreen .m-row select { width: auto; flex: 1 1 120px; }
+
+        #IntroScreen select option { background: #1e293b; color: #fff; }
+
+        .search-wrap { position: relative; }
+
+        .city-suggestions {
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: calc(100% + 4px);
+            z-index: 20;
+            max-height: 40vh;
+            overflow-y: auto;
+            background: #121c30;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+        }
+
+        .city-suggestion { display: flex; gap: 8px; align-items: center; padding: 10px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-size: 0.95rem; }
+        .city-suggestion.active, .city-suggestion:active { background: rgba(90, 169, 255, 0.2); }
+        .city-suggestion-name { flex: 1; }
+        .city-suggestion-country { color: var(--muted); font-size: 0.8rem; }
+        .city-suggestion .icon { width: 1em; height: 1em; }
+
+        .chip {
+            padding: 7px 12px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text);
+            font: inherit;
+            font-size: 0.85rem;
+        }
+
+        .chip[aria-pressed="true"] { background: rgba(90, 169, 255, 0.35); border-color: var(--accent); }
+
+        .sounding-status { margin: 0; font-size: 0.8rem; min-height: 1.2em; display: flex; gap: 6px; align-items: center; }
+        .sounding-status.loading { color: var(--muted); }
+        .sounding-status.success { color: var(--ok); }
+        .sounding-status.error { color: var(--danger); }
+        .sounding-status .icon { width: 1em; height: 1em; flex: none; }
+        #soundingTitle { margin: 0; font-size: 0.95rem; }
+
+        .icon { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+        .m-play {
+            padding: 14px;
+            border: 0;
+            border-radius: 14px;
+            font: inherit;
+            font-size: 1.15rem;
+            font-weight: 700;
+            color: #fff;
+            background: linear-gradient(135deg, #5aa9ff, #2f80ed);
+            box-shadow: 0 8px 26px rgba(90, 169, 255, 0.45);
+        }
+
+        .m-note { margin: 0; font-size: 0.75rem; color: var(--muted); }
+        .m-note a { color: var(--muted); }
+
+        .hidden-engine-inputs { display: none; }
+
+        /* ---------- In game ---------- */
+        .mobile-bar {
+            position: fixed;
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 6;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: calc(100% - 16px);
+            overflow-y: auto;
+            padding: 6px;
+            background: rgba(6, 12, 24, 0.45);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            border-radius: 14px;
+            scrollbar-width: none;
+        }
+
+        .mobile-bar-left { left: max(6px, env(safe-area-inset-left)); }
+        .mobile-bar-right { right: max(6px, env(safe-area-inset-right)); }
+
+        /* 9 buttons must fit a landscape phone's height (~360-430 px): size follows the viewport height */
+        .mobile-btn {
+            width: clamp(34px, calc((100dvh - 80px) / 9), 46px);
+            height: clamp(34px, calc((100dvh - 80px) / 9), 46px);
+            flex: none;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            background: rgba(255, 255, 255, 0.10);
+            color: #fff;
+            font-size: clamp(15px, 2.6dvh + 6px, 20px);
+            line-height: 1;
+            padding: 0;
+            touch-action: manipulation;
+        }
+
+        .mobile-btn.active { background: rgba(90, 169, 255, 0.6); border-color: #9fd0ff; }
+
+        .mobile-toast {
+            position: fixed;
+            left: 50%;
+            bottom: max(14px, env(safe-area-inset-bottom));
+            transform: translate(-50%, 20px);
+            z-index: 7;
+            padding: 8px 14px;
+            border-radius: 999px;
+            background: rgba(6, 12, 24, 0.75);
+            font-size: 0.85rem;
+            opacity: 0;
+            transition: opacity 0.25s, transform 0.25s;
+            pointer-events: none;
+            white-space: nowrap;
+        }
+
+        .mobile-toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+        /* dat.GUI (advanced settings), larger rows for fingers */
+        .dg.main { max-height: 80vh; overflow-y: auto !important; }
+        .dg li:not(.folder) { height: 34px !important; line-height: 34px !important; }
+
+        /* ---------- Portrait: ask to rotate ---------- */
+        #rotateHint {
+            position: fixed;
+            inset: 0;
+            z-index: 100;
+            display: none;
+            place-items: center;
+            text-align: center;
+            padding: 24px;
+            background: var(--bg);
+        }
+
+        #rotateHint .phone {
+            width: 46px;
+            height: 78px;
+            margin: 0 auto 18px;
+            border: 3px solid #fff;
+            border-radius: 9px;
+            animation: rotatePhone 2.2s ease-in-out infinite;
+        }
+
+        @keyframes rotatePhone { 0%, 30% { transform: rotate(0); } 60%, 100% { transform: rotate(-90deg); } }
+
+        @media (orientation: portrait) {
+            #rotateHint { display: grid; }
+        }
+
+        @media (prefers-reduced-motion: reduce) { #rotateHint .phone { animation: none; transform: rotate(-90deg); } }
+    </style>
+</head>
+
+<body onload="updateSetupSliders();">
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+        <defs>
+            <symbol id="i-pin" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></symbol>
+            <symbol id="i-balloon" viewBox="0 0 24 24"><path d="M12 15c3.3 0 6-3 6-6.5S15.3 2 12 2 6 5 6 8.5 8.7 15 12 15Z"/><path d="m10.6 15 1.4 1.6 1.4-1.6"/><path d="M12 16.6c0 2.4-2 2.6-2 5.4"/></symbol>
+            <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 2.5 2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5-4.8-4.6 6.6-.9Z"/></symbol>
+            <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="m8 12.5 2.8 2.8L16.5 9.5"/></symbol>
+            <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+            <symbol id="i-loader" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.2-8.6"/></symbol>
+        </defs>
+    </svg>
+
+    <div id="rotateHint" role="alert">
+        <div>
+            <div class="phone"></div>
+            <b>Tourne ton téléphone</b>
+            <p class="m-note" style="margin-top:6px">Le jeu se joue en format paysage.</p>
+        </div>
+    </div>
+
+    <div id="IntroScreen">
+        <div class="m-col">
+            <h1>2D <span>Weather</span> Sandbox</h1>
+            <p class="m-sub">Version mobile : choisis un lieu et une date, la vraie atmosphère est chargée puis tu joues avec les orages.</p>
+
+            <div class="m-card" id="stations-section">
+                <span class="m-label">Lieu</span>
+                <div class="search-wrap station-search-row">
+                    <input type="text" id="stationSearchInput" class="station-search" placeholder="Ville : Lille, Lyon, Tokyo…" autocomplete="off" spellcheck="false" />
+                    <div id="citySearchResults" class="city-suggestions" hidden></div>
+                </div>
+                <div class="m-row">
+                    <input type="date" id="datePicker" min="2010-01-01" />
+                    <select id="hourSelector">
+                        <option value="0">00 UTC</option>
+                        <option value="6">06 UTC</option>
+                        <option value="12" selected>12 UTC</option>
+                        <option value="15">15 UTC</option>
+                        <option value="18">18 UTC</option>
+                    </select>
+                </div>
+                <div class="m-row">
+                    <button type="button" class="chip" data-day-offset="0">Aujourd'hui</button>
+                    <button type="button" class="chip" data-day-offset="1">Demain</button>
+                    <button type="button" class="chip" data-day-offset="-1">Hier</button>
+                </div>
+                <h3 id="soundingTitle"></h3>
+                <p id="soundingStatus" class="sounding-status"></p>
+            </div>
+        </div>
+
+        <div class="m-col">
+            <div class="m-card">
+                <span class="m-label">Ou un scénario orageux</span>
+                <select id="presetSelect"></select>
+            </div>
+            <div class="m-card">
+                <span class="m-label">Taille de la carte</span>
+                <div class="m-row" id="mapSizes">
+                    <button type="button" class="chip" data-size="light" aria-pressed="true">Léger</button>
+                    <button type="button" class="chip" data-size="normal" aria-pressed="false">Normal</button>
+                    <button type="button" class="chip" data-size="detail" aria-pressed="false">Détaillé</button>
+                </div>
+                <p class="m-note" id="mapSizeNote"></p>
+            </div>
+            <button type="button" class="m-play" id="playBtn">▶ Jouer</button>
+            <p class="m-note">Ensuite, glisse le doigt pour choisir un relief et touche l'écran pour lancer. <a href="index.html">Version complète (ordinateur)</a></p>
+        </div>
+
+        <!-- Elements the engine (app.js) expects on the setup screen, kept hidden on mobile -->
+        <div class="hidden-engine-inputs" aria-hidden="true">
+            <select id="stationSelect"></select>
+            <input type="checkbox" id="applySoundingAtStart" checked />
+            <input type="range" id="simResSelX" min="100" max="16000" value="500" step="100" />
+            <input type="range" id="simResSelY" min="100" max="600" value="150" step="10" />
+            <input type="range" id="simHeightSel" min="5000" max="15000" value="12000" step="100" />
+            <output id="simResShowX"></output><output id="simResShowY"></output><output id="simHeightShow"></output>
+            <p id="simWorldProperties"></p><p id="simResYWarning"></p><p id="simHeightWarning"></p>
+            <input type="file" id="fileInput" accept=".weathersandbox" />
+        </div>
+    </div>
+
+    <canvas id="graphCanvas"></canvas>
+    <canvas id="dropletInfoCanvas" width="90" height="50" style="z-index: 1; position: absolute; left: 50%; top: 50%;"></canvas>
+    <canvas id="mainCanvas"></canvas>
+
+    <script>
+        // Map sizes for phones: fewer, larger cells keep the GPU load low (and tolerate stronger winds).
+        (function () {
+            const sizes = {
+                light:  { x: 500,  y: 150, note: 'Fluide sur la plupart des téléphones · 40 km de large' },
+                normal: { x: 900,  y: 200, note: 'Plus de détails · téléphone récent conseillé' },
+                detail: { x: 1400, y: 300, note: 'Proche de la version PC · téléphone haut de gamme' },
+            };
+            const note = document.getElementById('mapSizeNote');
+            function apply(key) {
+                const s = sizes[key];
+                document.getElementById('simResSelX').value = s.x;
+                document.getElementById('simResSelY').value = s.y;
+                note.textContent = s.note;
+                document.querySelectorAll('#mapSizes .chip').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.size === key)));
+                if (typeof updateSetupSliders === 'function') updateSetupSliders();
+            }
+            document.querySelectorAll('#mapSizes .chip').forEach(b => b.addEventListener('click', () => apply(b.dataset.size)));
+            apply('light');
+
+            document.getElementById('playBtn').addEventListener('click', () => {
+                const el = document.documentElement;
+                const req = el.requestFullscreen || el.webkitRequestFullscreen;
+                if (req) Promise.resolve(req.call(el)).then(() => screen.orientation?.lock?.('landscape')).catch(() => {});
+                loadData();
+            });
+        })();
+    </script>
+</body>
+
+</html>

@@ -361,7 +361,7 @@ void main()
       // float vaporChange = max(userInputValues[BRUSH_INTENSITY]);
 
 
-      if (water[CLOUD] > 0.0) {                // add as liquid
+      if (water[CLOUD] > 0.0 && wall[DISTANCE] != 0) { // add as liquid (CLOUD of wall cells holds storm damage)
         water[CLOUD] += cloudWaterChange;
         water[CLOUD] = max(water[CLOUD], 0.0); // prevent negative cloudwater
       }                                        // else {                                 // add as gas
@@ -444,6 +444,7 @@ void main()
         }
 
         if (setWall) {
+          water[CLOUD] = 0.0;         // fresh ground: no storm damage
           wall[DISTANCE] = 0;         // set wall
           base[TEMPERATURE] = 1000.0; // indicate this is wall and no snow cooling
                                       // water = vec4(0.0);

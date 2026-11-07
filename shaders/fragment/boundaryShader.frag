@@ -37,6 +37,8 @@ uniform float sunAngle;
 uniform float iterNum; // used as seed for random function
 
 uniform float dynamicWaterTemperature;
+uniform float kmhPerRaw;      // km/h per raw velocity unit (cells/iteration)
+uniform float stormDamage;    // 1 = trees and roofs get damaged by strong surface winds
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -423,6 +425,14 @@ void main()
         float evaporation = calcEvaporation(realTempAboveSurface, waterAboveSurface[TOTAL], float(wall[VEGETATION]), water[SOIL_MOISTURE]) * 0.10;
 
         water[SOIL_MOISTURE] -= evaporation;
+
+        // Storm damage to trees and roofs, 0 (intact) .. 1 (trees snapped, roofs stripped). Stored in the surface
+        // cell's CLOUD channel, which walls never use. Rises toward a target set by the wind just above the
+        // surface (70 km/h -> 0, 160 km/h -> 1) and never faster than a few hundred iterations, so only a
+        // sustained gust does real damage; recovers very slowly (regrowth / repairs over a few sim days).
+        float surfaceWindKmh = abs(baseAboveSurface[VX]) * kmhPerRaw;
+        float damageTarget = clamp((surfaceWindKmh - 70.0) / 90.0, 0.0, 1.0) * stormDamage;
+        water[CLOUD] = clamp(water[CLOUD] + max(damageTarget - water[CLOUD], 0.0) * 0.003 - 0.0000004, 0.0, 1.0);
 
 
         if (int(iterNum) % 100 == 0) { // snow and soil moisture smoothing
