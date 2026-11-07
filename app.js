@@ -849,8 +849,48 @@ function setupSoundingDateControls()
   }
 }
 
+// Checks, before anything is loaded, that this device can run the simulation: WebGL2 plus rendering into
+// floating point textures. Returns null when everything is there, otherwise a short French explanation.
+function checkDeviceSupport()
+{
+  try {
+    const gl2 = document.createElement('canvas').getContext('webgl2');
+    if (!gl2)
+      return 'Ton navigateur ou ton appareil ne gère pas WebGL2, indispensable au jeu. Essaie un navigateur récent (Chrome, Firefox, Safari 15+ ou Edge).';
+    if (!gl2.getExtension('EXT_color_buffer_float'))
+      return 'La carte graphique de cet appareil ne gère pas les calculs en virgule flottante dont le jeu a besoin. Il risque de ne pas démarrer.';
+  } catch (e) {
+    return 'Impossible de vérifier la carte graphique de cet appareil : le jeu risque de ne pas démarrer.';
+  }
+  return null;
+}
+
+// Small dismissable notice pinned to the top of the home screen (removed with it when the game starts).
+function showHomeNotice(html, kind)
+{
+  const host = document.getElementById('IntroScreen') || document.body;
+  const box = document.createElement('div');
+  box.className = 'home-notice home-notice-' + kind;
+  box.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+  box.innerHTML = html; // only called with the fixed strings below, never with external data
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'home-notice-close';
+  close.setAttribute('aria-label', 'Fermer');
+  close.textContent = '×';
+  close.addEventListener('click', () => box.remove());
+  box.appendChild(close);
+  host.appendChild(box);
+}
+
 // Ensure the DOM is fully loaded before running the function
 document.addEventListener('DOMContentLoaded', () => {
+  const unsupported = checkDeviceSupport();
+  if (unsupported)
+    showHomeNotice('<b>Appareil non compatible.</b> ' + unsupported, 'error');
+  else if (!window.MOBILE_MODE && window.matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820)
+    showHomeNotice('<b>Tu es sur téléphone ?</b> La <a href="mobile.html">version mobile</a> est faite pour l\'écran tactile et le format paysage.', 'info');
+
   createPresetSelect();
   stationSelector = createStationSelect();
   setupStationSearch();
@@ -4984,7 +5024,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   // console.log(gl.getContextAttributes());
 
   if (!gl) {
-    alert('Your browser does not support WebGL2, Download a new browser.');
+    alert('Ton navigateur ou ton appareil ne gère pas WebGL2, nécessaire au jeu. Mets à jour ton navigateur (Chrome, Firefox, Safari ou Edge récent).');
     throw ' Error: Your browser does not support WebGL2';
   }
 

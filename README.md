@@ -1,3 +1,17 @@
+# 2D Weather Sandbox PLUS
+
+## ▶ Jouer
+
+- **Sur ordinateur** : https://cieuxinstable.github.io/2D-Weather-Sandbox-PLUS/
+- **Sur téléphone ou tablette** (format paysage) : https://cieuxinstable.github.io/2D-Weather-Sandbox-PLUS/mobile.html
+
+Gratuit, sans inscription, directement dans le navigateur (Chrome, Firefox, Safari ou Edge récent, avec WebGL2).
+Version PLUS par Cieux Instables, basée sur le 2D Weather Sandbox de Niels Daemen (GPL-3.0).
+
+**Nouveautés de cette version** : sondages réels pour n'importe quelle ville (Open-Meteo, prévisions à 15 jours), interface en français, soleil, lune et étoiles, arbres et maisons qui subissent les tempêtes, vent en altitude stabilisé, version mobile.
+
+---
+
 # 2D Weather Sandbox
 
 Previously called "Weather_Sim_4"
