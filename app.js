@@ -2180,7 +2180,7 @@ class LoadingBar
     this.loadingBar.style.textAlign = 'center';
     this.loadingBar.style.lineHeight = '50px';
     this.loadingBar.style.backgroundColor = 'gray';
-    this.loadingBar.style.marginTop = '400px';
+    this.loadingBar.style.marginTop = Math.round(Math.min(400, window.innerHeight * 0.35)) + 'px'; // stays on screen on phones in landscape
     this.loadingBar.style.position = 'absolute';
     this.loadingBar.style.zIndex = '2';
 
@@ -5799,6 +5799,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     setupSoundingDateTimeWidget();
     setupWindResetUI();
 
+    if (window.MOBILE_MODE)
+      setupMobileUI();
+
     simDateTime = new Date(2000, Math.floor(guiControls.month) - 1, (guiControls.month % 1) * 30.417);
 
     // initialize time and solar angle
@@ -6007,6 +6010,122 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         loadStationForForcing(guiControls.activeSoundingStation);
       }, 350);
     });
+  }
+
+  // ===================== Mobile (mobile.html, landscape) =====================
+  // Touch controls replacing the keyboard and the dat.GUI panel: a tool column on the left (left thumb) and a
+  // command column on the right (right thumb). One finger uses the tool, two fingers zoom and pan.
+  function setupMobileUI()
+  {
+    for (const id of [ 'stationMarkersBar', 'stationMarkerStatus', 'soundingDateTimeWidget' ]) {
+      const el = document.getElementById(id);
+      if (el)
+        el.style.display = 'none';
+    }
+    guiControls.showStationMarkers = false;
+    guiControls.brushSize = 14;
+    datGui.hide(); // the full settings panel is too dense for a phone: opened on demand with the gear button
+    let advancedShown = false;
+
+    // clock, CAPE/STP and siren: smaller and moved right of the tool column
+    const infoLeft = 'calc(env(safe-area-inset-left, 0px) + 62px)';
+    clockEl.style.left = infoLeft;
+    clockEl.style.top = '4px';
+    clockEl.style.fontSize = '20px';
+    atmosStatsEl.style.left = infoLeft;
+    atmosStatsEl.style.top = '30px';
+    atmosStatsEl.style.fontSize = '13px';
+    sirenToggleEl.style.left = infoLeft;
+    sirenToggleEl.style.top = '52px';
+    sirenToggleEl.style.fontSize = '12px';
+
+    const makeBar = (side) => {
+      const bar = document.createElement('div');
+      bar.className = 'mobile-bar mobile-bar-' + side;
+      document.body.appendChild(bar);
+      return bar;
+    };
+    const makeBtn = (bar, label, title, onTap) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'mobile-btn';
+      b.textContent = label;
+      b.title = title;
+      b.setAttribute('aria-label', title);
+      b.addEventListener('click', (e) => { e.stopPropagation(); onTap(b); });
+      bar.appendChild(b);
+      return b;
+    };
+
+    // ---- tools (left)
+    const tools = makeBar('left');
+    const toolDefs = [
+      [ '👁', 'Regarder (pas d\'outil)', 'TOOL_NONE' ],
+      [ '🔥', 'Chaleur', 'TOOL_TEMPERATURE' ],
+      [ '☁', 'Nuage / humidité', 'TOOL_WATER' ],
+      [ '💨', 'Vent', 'TOOL_WIND' ],
+      [ '⛰', 'Terre', 'TOOL_WALL_LAND' ],
+      [ '🌊', 'Lac / mer', 'TOOL_WALL_SEA' ],
+      [ '🏠', 'Ville', 'TOOL_WALL_URBAN' ],
+    ];
+    const toolButtons = [];
+    const refreshTools = () => { for (const [b, t] of toolButtons) b.classList.toggle('active', guiControls.tool === t); };
+    for (const [icon, title, tool] of toolDefs) {
+      const b = makeBtn(tools, icon, title, () => { guiControls.tool = tool; refreshTools(); });
+      toolButtons.push([ b, tool ]);
+    }
+    const invertBtn = makeBtn(tools, '−', 'Inverser l\'outil (retirer, refroidir, assécher)', (b) => {
+      ctrlPressed = !ctrlPressed;
+      b.classList.toggle('active', ctrlPressed);
+    });
+    refreshTools();
+    setInterval(refreshTools, 1000); // stays in sync if the tool is changed from the advanced menu
+
+    // ---- commands (right)
+    const cmds = makeBar('right');
+    const pauseBtn = makeBtn(cmds, '⏸', 'Pause / reprise', (b) => {
+      guiControls.paused = !guiControls.paused;
+      handlePause();
+      b.textContent = guiControls.paused ? '▶' : '⏸';
+    });
+    const views = [ [ 'DISP_REAL', 'Réaliste' ], [ 'DISP_HUMD', 'Nuages' ], [ 'DISP_HORIVEL', 'Vent' ], [ 'DISP_TEMPERATURE', 'Température' ], [ 'DISP_PRECIPFEEDBACK_MASS', 'Pluie' ] ];
+    const viewBtn = makeBtn(cmds, '◐', 'Changer d\'affichage', (b) => {
+      const i = views.findIndex(v => v[0] === guiControls.displayMode);
+      const next = views[(i + 1) % views.length];
+      guiControls.displayMode = next[0];
+      showMobileToast('Affichage : ' + next[1]);
+    });
+    makeBtn(cmds, '⊕', 'Pinceau plus grand', () => { guiControls.brushSize = Math.min(guiControls.brushSize * 1.4, 200); showMobileToast('Pinceau : ' + Math.round(guiControls.brushSize)); });
+    makeBtn(cmds, '⊖', 'Pinceau plus petit', () => { guiControls.brushSize = Math.max(guiControls.brushSize / 1.4, 2); showMobileToast('Pinceau : ' + Math.round(guiControls.brushSize)); });
+    makeBtn(cmds, '📈', 'Sondage (émagramme)', () => { guiControls.showGraph = !guiControls.showGraph; hideOrShowGraph(); });
+    makeBtn(cmds, '⤢', 'Recentrer la vue', () => cam.center());
+    makeBtn(cmds, '⚙', 'Réglages avancés', (b) => {
+      advancedShown = !advancedShown;
+      if (advancedShown) datGui.show(); else datGui.hide();
+      b.classList.toggle('active', advancedShown);
+    });
+    makeBtn(cmds, '⛶', 'Plein écran', () => {
+      const el = document.documentElement;
+      const req = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (!document.fullscreenElement && req) {
+        Promise.resolve(req.call(el)).then(() => screen.orientation?.lock?.('landscape')).catch(() => {});
+      } else if (document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    });
+
+    const toast = document.createElement('div');
+    toast.className = 'mobile-toast';
+    document.body.appendChild(toast);
+    let toastTimer = null;
+    function showMobileToast(text)
+    {
+      toast.textContent = text;
+      toast.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 1400);
+    }
+    showMobileToast('1 doigt : outil · 2 doigts : zoom et déplacement');
   }
 
   // Progress bar shown while startWindReset() fades guiControls.wind to 0.
@@ -6840,7 +6959,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   var previousTouches;
 
 
-  canvas.addEventListener('touchstart', function(event) { event.preventDefault(); }, {passive : false});
+  canvas.addEventListener('touchstart', function(event) {
+    event.preventDefault();
+    if (event.touches.length == 1) {
+      mouseX = event.touches[0].clientX;
+      mouseY = event.touches[0].clientY;
+    }
+  }, {passive : false});
 
   canvas.addEventListener('touchend', function(event) {
     event.preventDefault();
@@ -6886,7 +7011,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         cam.zoomAtMousePos((curSep / prevSep) - 1.0);
 
         if (wasTwoFingerTouchBefore) {
-          cam.changeViewYpos(((mouseX - prevMouseX) / cam.curZoom / canvas.width) * 2.0);
+          cam.changeViewXpos(((mouseX - prevMouseX) / cam.curZoom / canvas.width) * 2.0);
           cam.changeViewYpos(((mouseY - prevMouseY) / cam.curZoom / canvas.width) * 2.0);
         }
         wasTwoFingerTouchBefore = true;
