@@ -166,6 +166,38 @@
 
         .hidden-engine-inputs { display: none; }
 
+        .home-notice {
+            position: fixed;
+            left: 50%;
+            top: max(10px, env(safe-area-inset-top, 0px));
+            transform: translateX(-50%);
+            z-index: 50;
+            width: min(92vw, 640px);
+            padding: 10px 40px 10px 14px;
+            border-radius: 12px;
+            font-size: 0.92rem;
+            line-height: 1.4;
+            color: #fff;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+        }
+
+        .home-notice-info { background: rgba(30, 70, 130, 0.95); border: 1px solid rgba(140, 190, 255, 0.6); }
+        .home-notice-error { background: rgba(120, 30, 30, 0.95); border: 1px solid rgba(255, 140, 140, 0.6); }
+        .home-notice a { color: #ffd36b; font-weight: 600; }
+
+        .home-notice-close {
+            position: absolute;
+            right: 6px;
+            top: 4px;
+            width: 30px;
+            height: 30px;
+            border: 0;
+            background: none;
+            color: #fff;
+            font-size: 22px;
+            cursor: pointer;
+        }
+
         /* ---------- In game ---------- */
         .mobile-bar {
             position: fixed;
