@@ -62,15 +62,16 @@ uniform vec2 resolution;
 
 vec2 texelSize;
 
-uniform vec4 initial_Tv[152];
-uniform vec4 realWorldSounding_Tv[152];
-uniform vec4 realWorldSounding_Wv[152];
-uniform vec4 realWorldSounding_Velv[152];
 
-float getInitialT(int y) { return initial_Tv[y / 4][y % 4]; }
-float getRealWorldSounding_T(int y) { return (realWorldSounding_Tv[y / 4][y % 4] + realWorldSounding_Tv[(y - 1) / 4][(y - 1) % 4]) / 2.; }
-float getRealWorldSounding_W(int y) { return (realWorldSounding_Wv[y / 4][y % 4] + realWorldSounding_Wv[(y - 1) / 4][(y - 1) % 4]) / 2.; }
-float getRealWorldSounding_Vel(int y) { return (realWorldSounding_Velv[y / 4][y % 4] + realWorldSounding_Velv[(y - 1) / 4][(y - 1) % 4]) / 2.; }
+// Vertical profiles in a 1-row RGBA32F texture (x = cell row): r = initial temperature, g = sounding temperature,
+// b = sounding water, a = sounding wind. A texture instead of uniform arrays: 4 x 152 vec4 uniforms exceeded the
+// 256 fragment uniform vectors most phones allow, so the shader failed to compile there and the game never loaded.
+uniform sampler2D profileTex;
+vec4 profileAt(int y) { return texelFetch(profileTex, ivec2(clamp(y, 0, textureSize(profileTex, 0).x - 1), 0), 0); }
+float getInitialT(int y) { return profileAt(y).r; }
+float getRealWorldSounding_T(int y) { return (profileAt(y).g + profileAt(y - 1).g) / 2.; }
+float getRealWorldSounding_W(int y) { return (profileAt(y).b + profileAt(y - 1).b) / 2.; }
+float getRealWorldSounding_Vel(int y) { return (profileAt(y).a + profileAt(y - 1).a) / 2.; }
 
 #include "common.glsl"
 

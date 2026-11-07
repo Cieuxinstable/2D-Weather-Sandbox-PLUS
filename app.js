@@ -2255,7 +2255,13 @@ class LoadingBar
   async showError(error)
   {
     this.bar.style.backgroundColor = 'red';
-    this.description = error;
+    // shown in full (wrapping, small text) so a player can screenshot the exact driver message
+    this.underBar.style.height = 'auto';
+    this.underBar.style.lineHeight = '1.35';
+    this.underBar.style.fontSize = '13px';
+    this.underBar.style.padding = '8px 12px';
+    this.underBar.style.whiteSpace = 'pre-wrap';
+    this.description = String(error).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     await this.#update();
   }
 
@@ -6139,11 +6145,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     makeBtn(cmds, '⊖', 'Pinceau plus petit', () => { guiControls.brushSize = Math.max(guiControls.brushSize / 1.4, 2); showMobileToast('Pinceau : ' + Math.round(guiControls.brushSize)); });
     makeBtn(cmds, '📈', 'Sondage (émagramme)', () => { guiControls.showGraph = !guiControls.showGraph; hideOrShowGraph(); });
     makeBtn(cmds, '⤢', 'Recentrer la vue', () => cam.center());
-    makeBtn(cmds, '⚙', 'Réglages avancés', (b) => {
-      advancedShown = !advancedShown;
-      if (advancedShown) datGui.show(); else datGui.hide();
-      b.classList.toggle('active', advancedShown);
-    });
+    const settingsBtn = makeBtn(cmds, '⚙', 'Réglages', () => toggleSheet());
     makeBtn(cmds, '⛶', 'Plein écran', () => {
       const el = document.documentElement;
       const req = el.requestFullscreen || el.webkitRequestFullscreen;
@@ -6153,6 +6155,101 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         document.exitFullscreen().catch(() => {});
       }
     });
+
+    // ---- settings sheet: a few essential settings with finger-sized controls. Values go through the dat.GUI
+    // controllers (setValue) so every side effect (uniform uploads, etc.) runs exactly as on desktop.
+    const controllerFor = (prop) => {
+      const all = [];
+      (function walk(g) { all.push(...g.__controllers); for (const f of Object.values(g.__folders)) walk(f); })(datGui);
+      return all.find(c => c.property === prop);
+    };
+    const setSetting = (prop, value) => {
+      const c = controllerFor(prop);
+      if (c)
+        c.setValue(value);
+      else
+        guiControls[prop] = value;
+    };
+
+    const sheet = document.createElement('div');
+    sheet.className = 'mobile-sheet';
+    sheet.hidden = true;
+    sheet.addEventListener('touchmove', e => e.stopPropagation(), {passive : true});
+    document.body.appendChild(sheet);
+    const sheetHead = document.createElement('div');
+    sheetHead.className = 'mobile-sheet-head';
+    sheetHead.innerHTML = '<b>Réglages</b>';
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'mobile-sheet-close';
+    closeBtn.textContent = 'Fermer';
+    closeBtn.addEventListener('click', () => toggleSheet(false));
+    sheetHead.appendChild(closeBtn);
+    sheet.appendChild(sheetHead);
+    const sheetBody = document.createElement('div');
+    sheetBody.className = 'mobile-sheet-body';
+    sheet.appendChild(sheetBody);
+
+    const refreshers = [];
+    const addSlider = (label, prop, min, max, step, fmt) => {
+      const row = document.createElement('label');
+      row.className = 'mobile-row';
+      const name = document.createElement('span');
+      name.textContent = label;
+      const out = document.createElement('output');
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.min = min;
+      input.max = max;
+      input.step = step;
+      input.addEventListener('input', () => { setSetting(prop, parseFloat(input.value)); out.textContent = fmt(parseFloat(input.value)); });
+      row.append(name, input, out);
+      sheetBody.appendChild(row);
+      refreshers.push(() => { input.value = guiControls[prop]; out.textContent = fmt(guiControls[prop]); });
+    };
+    const addToggle = (label, prop) => {
+      const row = document.createElement('label');
+      row.className = 'mobile-row mobile-row-toggle';
+      const name = document.createElement('span');
+      name.textContent = label;
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.addEventListener('change', () => setSetting(prop, input.checked));
+      row.append(name, input);
+      sheetBody.appendChild(row);
+      refreshers.push(() => { input.checked = !!guiControls[prop]; });
+    };
+
+    addSlider('Vent', 'wind', -1, 1, 0.01, v => (v > 0 ? '→ ' : v < 0 ? '← ' : '') + Math.round(Math.abs(v) * 100) + ' %');
+    addSlider('Forçage du sondage', 'soundingForcing', 0, 1, 0.01, v => Math.round(v * 100) + ' %');
+    addSlider('Heure', 'timeOfDay', 0, 23.9, 0.1, v => String(Math.floor(v)).padStart(2, '0') + 'h' + String(Math.floor((v % 1) * 60)).padStart(2, '0'));
+    addToggle('Cycle jour / nuit', 'dayNightCycle');
+    addToggle('Pluie, neige et grêle', 'enablePrecipitation');
+    addToggle('Dégâts de tempête', 'stormDamage');
+    addToggle('Ciel réaliste (soleil, lune, étoiles)', 'skyEffects');
+    addToggle('Son', 'sound');
+
+    const fullMenuBtn = document.createElement('button');
+    fullMenuBtn.type = 'button';
+    fullMenuBtn.className = 'mobile-sheet-full';
+    fullMenuBtn.textContent = 'Menu complet (tous les réglages)';
+    fullMenuBtn.addEventListener('click', () => {
+      toggleSheet(false);
+      advancedShown = !advancedShown;
+      if (advancedShown) datGui.show(); else datGui.hide();
+    });
+    sheetBody.appendChild(fullMenuBtn);
+
+    function toggleSheet(force)
+    {
+      const show = typeof force === 'boolean' ? force : sheet.hidden;
+      if (show) {
+        refreshers.forEach(r => r());
+        if (advancedShown) { advancedShown = false; datGui.hide(); }
+      }
+      sheet.hidden = !show;
+      settingsBtn.classList.toggle('active', show);
+    }
 
     const toast = document.createElement('div');
     toast.className = 'mobile-toast';
@@ -6294,8 +6391,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), 0);
 
         // Empty the sounding's wind profile outright (not just scaled) before restoring the multiplier.
-        gl.useProgram(advectionProgram);
-        gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Velv'), new Float32Array(608));
+        for (let y = 0; y < profileWidth; y++)
+          profileData[y * 4 + 3] = 0; // empty the sounding wind channel
+        uploadProfiles();
 
         windMultiplier = 1.0; // disengage: forces are already at 0 and the profile is empty, so this is a no-op until wind/a new station reintroduces something
         uploadWindMultiplier();
@@ -8057,9 +8155,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   // restarting it.
   function updateSoundingForcingUniforms()
   {
-    var realWorldSounding_T = new Float32Array(608);   // 152 vec4 = up to sim_res_y + 1 = 607
-    var realWorldSounding_W = new Float32Array(608);   // 152 vec4 = up to sim_res_y + 1 = 607
-    var realWorldSounding_Vel = new Float32Array(608); // 152 vec4 = up to sim_res_y + 1 = 607
+    for (let y = 0; y < profileWidth; y++) // clear the sounding channels (g, b, a), keep the initial temperature (r)
+      profileData[y * 4 + 1] = profileData[y * 4 + 2] = profileData[y * 4 + 3] = 0;
 
     if (soundingData && soundingData.length > 10) {
       var soundingForSim = rawSoundingToSimSounding(soundingData, guiControls.simHeight, sim_res_y + 1);
@@ -8068,9 +8165,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         let soundingSample = soundingForSim[y];
 
-        realWorldSounding_T[y] = realToPotentialT(CtoK(soundingSample.t), y); // initial temperature profile
-        realWorldSounding_W[y] = maxWater(CtoK(soundingSample.td), y);        // initial temperature profile
-        realWorldSounding_Vel[y] = soundingSample.vel;
+        profileData[y * 4 + 1] = realToPotentialT(CtoK(soundingSample.t), y); // sounding temperature profile
+        profileData[y * 4 + 2] = maxWater(CtoK(soundingSample.td), y);        // sounding water profile
+        profileData[y * 4 + 3] = soundingSample.vel;                         // sounding wind profile
       }
       // console.log(realWorldSounding_T);
       // console.log(realWorldSounding_W);
@@ -8079,22 +8176,39 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       console.log('No valid sounding loaded!');
     }
 
-    gl.useProgram(advectionProgram);
-    gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Tv'), realWorldSounding_T);
-    gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Wv'), realWorldSounding_W);
-    gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Velv'), realWorldSounding_Vel);
+    uploadProfiles();
+  }
+
+  // Vertical profiles shared by the setup, boundary, velocity and advection shaders, in a 1-row RGBA32F texture
+  // kept bound to texture unit PROFILE_TEX_UNIT (used by nothing else): r = initial temperature, g/b/a = sounding
+  // temperature / water / wind. Replaces 152-vec4 uniform arrays that exceeded phone GPU uniform limits.
+  const PROFILE_TEX_UNIT = 15;
+  const profileWidth = sim_res_y + 2;
+  const profileData = new Float32Array(profileWidth * 4);
+  const profileTexture = gl.createTexture();
+
+  function uploadProfiles()
+  {
+    const previousUnit = gl.getParameter(gl.ACTIVE_TEXTURE);
+    gl.activeTexture(gl.TEXTURE0 + PROFILE_TEX_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, profileTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, profileWidth, 1, 0, gl.RGBA, gl.FLOAT, profileData);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.activeTexture(previousUnit);
   }
 
   // generate Initial temperature profile
 
-  var initial_T = new Float32Array(608); // 152 vec4 = up to sim_res_y + 1 = 607
-
-  for (var y = 0; y < sim_res_y + 1; y++) {
+  for (var y = 0; y < profileWidth; y++) {
     let altitude = y / (sim_res_y + 1) * guiControls.simHeight;
     var realTemp = Math.max(map_range(altitude, 0, 12000, 15.0, -70.0), -60);
 
-    initial_T[y] = realToPotentialT(CtoK(realTemp), y); // initial temperature profile
+    profileData[y * 4] = realToPotentialT(CtoK(realTemp), y); // initial temperature profile
   }
+  uploadProfiles();
 
   cellHeight = guiControls.simHeight / sim_res_y; // in meters
 
@@ -8105,7 +8219,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1f(gl.getUniformLocation(setupProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(setupProgram, 'simHeight'), guiControls.simHeight);
 
-  gl.uniform4fv(gl.getUniformLocation(setupProgram, 'initial_Tv'), initial_T);
+  gl.uniform1i(gl.getUniformLocation(setupProgram, 'profileTex'), PROFILE_TEX_UNIT);
 
   gl.useProgram(advectionProgram);
   gl.uniform1i(gl.getUniformLocation(advectionProgram, 'baseTex'), 0);
@@ -8115,7 +8229,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform2f(gl.getUniformLocation(advectionProgram, 'resolution'), sim_res_x, sim_res_y);
   // gl.uniform1fv(
   // gl.getUniformLocation(advectionProgram, 'initial_T'), initial_T);
-  gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'initial_Tv'), initial_T);
+  gl.uniform1i(gl.getUniformLocation(advectionProgram, 'profileTex'), PROFILE_TEX_UNIT);
   gl.uniform1f(gl.getUniformLocation(advectionProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(advectionProgram, 'waterTemperature'),
                CtoK(guiControls.waterTemperature)); // can be changed by GUI input
@@ -8134,7 +8248,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform2f(gl.getUniformLocation(velocityProgram, 'texelSize'), texelSizeX, texelSizeY);
 
   // gl.uniform1fv(gl.getUniformLocation(velocityProgram, 'initial_T'), initial_T);
-  gl.uniform4fv(gl.getUniformLocation(velocityProgram, 'initial_Tv'), initial_T);
+  gl.uniform1i(gl.getUniformLocation(velocityProgram, 'profileTex'), PROFILE_TEX_UNIT);
 
   gl.useProgram(vorticityProgram);
   gl.uniform2f(gl.getUniformLocation(vorticityProgram, 'texelSize'), texelSizeX, texelSizeY);
@@ -8156,7 +8270,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
                CtoK(guiControls.waterTemperature)); // can be changed by GUI input
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'dryLapse'), dryLapse);
   // gl.uniform1fv(gl.getUniformLocation(boundaryProgram, 'initial_T'), initial_T);
-  gl.uniform4fv(gl.getUniformLocation(boundaryProgram, 'initial_Tv'), initial_T);
+  gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'profileTex'), PROFILE_TEX_UNIT);
   gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'allowCaves'), guiControls.allowCaves ? 1 : 0);
 
   gl.useProgram(curlProgram);
@@ -9365,8 +9479,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     if (gl.getProgramParameter(program, gl.LINK_STATUS)) {
       return program; // linked succesfully
     } else {
-      throw 'ERROR: ' + gl.getProgramInfoLog(program);
-      gl.deleteProgram(program);
+      const log = gl.getProgramInfoLog(program);
+      loadingBar.showError('Un programme graphique ne peut pas être assemblé sur cet appareil.\n' + log);
+      throw 'ERROR: ' + log;
     }
   }
 
@@ -9426,8 +9541,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     // console.timeEnd('compileShader')
 
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      // Compile error
-      throw filename + ' COMPILATION ' + gl.getShaderInfoLog(shader);
+      // Compile error: shown on screen, not only in the console, so it can be reported from a phone
+      const log = gl.getShaderInfoLog(shader);
+      await loadingBar.showError('Le shader ' + nameIn + ' ne compile pas sur cet appareil.\n' + log);
+      throw filename + ' COMPILATION ' + log;
     }
     return new Promise(async (resolve) => {
       await loadingBar.add(3, 'Loading shader: ' + nameIn);
