@@ -430,24 +430,35 @@ void main()
 
         water[SOIL_MOISTURE] -= evaporation;
 
-        // Storm damage to trees and roofs, stored in the surface cell's CLOUD channel (walls never use it) as the
-        // strongest sustained gust the spot has felt: |value| 0..1 = 50..200 km/h, the sign is the direction of
-        // that gust (which way trees fell). The gust is the strongest horizontal wind in the 4 cells above the
-        // ground (the very first cell is slowed by ground friction, trees and roofs stand higher). It only rises,
-        // within a second or two of sustained gust, and stays until the ground is repainted. The display shader
-        // turns it into stages per tree species and building.
+        // Storm damage to trees and roofs, stored in the surface cell's CLOUD channel (walls never use it), packed as an
+        // integer: peak * 65536 + previous peak * 256 + timer, divided by 2^24 (exact in float32, and keeps the value
+        // below 1 like real cloud water, for shaders that read it); sign = direction of the peak gust (which way trees fall).
+        //  - peak: strongest gust felt here, km/h, = strongest horizontal wind in the 4 cells above the ground (the
+        //    very first cell is slowed by ground friction; trees and roofs stand higher);
+        //  - timer: 0..255, counts up after each new peak; the display shader animates what broke between the
+        //    previous peak and the new one (trees falling, leaves, branches and tiles flying off) while it runs.
+        // A new peak is only taken once the previous animation has finished. Kept until the ground is repainted.
         if (stormDamage > 0.5) {
           float gustRaw = baseAboveSurface[VX];
           for (int k = 2; k <= 4; k++) {
             float vk = texture(baseTex, texCoord + vec2(0.0, float(k) * texelSize.y))[VX];
             if (abs(vk) > abs(gustRaw)) gustRaw = vk;
           }
-          float damageTarget = clamp((abs(gustRaw) * kmhPerRaw - 50.0) / 150.0, 0.0, 1.0);
-          float damageNow = abs(water[CLOUD]);
-          if (damageTarget > damageNow) {
-            damageNow += (damageTarget - damageNow) * 0.0015;
-            water[CLOUD] = damageNow * (gustRaw < 0.0 ? -1.0 : 1.0);
+          float gustKmh = abs(gustRaw) * kmhPerRaw;
+          int packed = int(abs(water[CLOUD]) * 16777216.0 + 0.5);
+          if (packed < 65536) packed = 255; // empty: nothing to animate
+          int peak = packed >> 16, prevPeak = (packed >> 8) & 255, timer = packed & 255;
+          float dir = water[CLOUD] < 0.0 ? -1.0 : 1.0;
+          if (timer < 255 && int(iterNum) % 4 == 0)
+            timer++;
+          if (timer == 255 && gustKmh > 55.0 && gustKmh > float(peak) + 3.0) {
+            prevPeak = peak;
+            peak = min(int(gustKmh), 255);
+            timer = 0;
+            dir = gustRaw < 0.0 ? -1.0 : 1.0;
           }
+          if (peak > 0)
+            water[CLOUD] = dir * float(peak * 65536 + prevPeak * 256 + timer) / 16777216.0;
         }
 
 
