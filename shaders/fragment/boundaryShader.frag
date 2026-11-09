@@ -430,13 +430,25 @@ void main()
 
         water[SOIL_MOISTURE] -= evaporation;
 
-        // Storm damage to trees and roofs, 0 (intact) .. 1 (trees snapped, roofs stripped). Stored in the surface
-        // cell's CLOUD channel, which walls never use. Rises toward a target set by the wind just above the
-        // surface (70 km/h -> 0, 160 km/h -> 1) and never faster than a few hundred iterations, so only a
-        // sustained gust does real damage; recovers very slowly (regrowth / repairs over a few sim days).
-        float surfaceWindKmh = abs(baseAboveSurface[VX]) * kmhPerRaw;
-        float damageTarget = clamp((surfaceWindKmh - 70.0) / 90.0, 0.0, 1.0) * stormDamage;
-        water[CLOUD] = clamp(water[CLOUD] + max(damageTarget - water[CLOUD], 0.0) * 0.003 - 0.0000004, 0.0, 1.0);
+        // Storm damage to trees and roofs, stored in the surface cell's CLOUD channel (walls never use it) as the
+        // strongest sustained gust the spot has felt: |value| 0..1 = 50..200 km/h, the sign is the direction of
+        // that gust (which way trees fell). The gust is the strongest horizontal wind in the 4 cells above the
+        // ground (the very first cell is slowed by ground friction, trees and roofs stand higher). It only rises,
+        // within a second or two of sustained gust, and stays until the ground is repainted. The display shader
+        // turns it into stages per tree species and building.
+        if (stormDamage > 0.5) {
+          float gustRaw = baseAboveSurface[VX];
+          for (int k = 2; k <= 4; k++) {
+            float vk = texture(baseTex, texCoord + vec2(0.0, float(k) * texelSize.y))[VX];
+            if (abs(vk) > abs(gustRaw)) gustRaw = vk;
+          }
+          float damageTarget = clamp((abs(gustRaw) * kmhPerRaw - 50.0) / 150.0, 0.0, 1.0);
+          float damageNow = abs(water[CLOUD]);
+          if (damageTarget > damageNow) {
+            damageNow += (damageTarget - damageNow) * 0.0015;
+            water[CLOUD] = damageNow * (gustRaw < 0.0 ? -1.0 : 1.0);
+          }
+        }
 
 
         if (int(iterNum) % 100 == 0) { // snow and soil moisture smoothing
@@ -471,7 +483,7 @@ void main()
 
           int vegetationGrowthRate = int(water[SOIL_MOISTURE] * sqrt(lightAboveSurface[SUNLIGHT]) * 0.01);
 
-          if (vegetationGrowthRate > 0 && int(iterNum) % ((100 / vegetationGrowthRate) * 100) == 0) {      // growth interval
+          if (wall[TYPE] != WALLTYPE_URBAN && vegetationGrowthRate > 0 && int(iterNum) % ((100 / vegetationGrowthRate) * 100) == 0) {      // growth interval
             if (int(map_rangeC(realTempAboveSurface, CtoK(0.0), CtoK(25.0), 0., 127.)) > wall[VEGETATION]) // limit vegetation growth at lower temperatures
               wall[VEGETATION] += 1;
           }

@@ -100,25 +100,17 @@ float map_range(float value, float min1, float max1, float min2, float max2) { r
 
 float map_rangeC(float value, float min1, float max1, float min2, float max2) { return clamp(map_range(value, min1, max1, min2, max2), min(min2, max2), max(min2, max2)); }
 
-// Wind ceiling profile: 1.0 below taperStart (normalized altitude), easing smoothly down to 0.0 at the top
-// of the domain. Applied to the wind FORCING (global wind and sounding wind target), never as a hard brake
-// on the velocity field, so the flow aloft decays gradually instead of shearing against a damped layer.
-float windTaper(float y, float taperStart)
-{
-  if (taperStart >= 0.999)
-    return 1.0;
-  return 1.0 - smoothstep(taperStart, 1.0, y);
-}
-
-// Flow speed limiter, in cells/iteration (see the velocity shader). velMax comes from the "Limite de vent"
-// setting; below 2/3 of it nothing changes, above that the excess is eased with tanh up to velMax.
+// Wind limit, in cells/iteration (see the velocity shader). Below 90% of velMax nothing changes; above, the
+// excess is eased (smooth, same slope at both ends) so the speed reaches exactly velMax and is then held there.
 float softLimitSpeed(float v, float velMax)
 {
-  float soft = velMax * 0.67;
+  float soft = velMax * 0.9;
+  float r = velMax - soft;
   float a = abs(v);
   if (a <= soft)
     return v;
-  return sign(v) * (soft + (velMax - soft) * tanh((a - soft) / (velMax - soft)));
+  float e = min(a - soft, 2.0 * r);
+  return sign(v) * (soft + e - e * e / (4.0 * r));
 }
 
 
