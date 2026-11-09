@@ -560,7 +560,7 @@ vec4 flyingDebris(float xm, float v, float windKmh, float amount, bool tiles, fl
   vec2 d = P - ctr;
   float a = iterNum * 0.05 * (hk.w - 0.5);
   vec2 r = vec2(cos(a) * d.x + sin(a) * d.y, -sin(a) * d.x + cos(a) * d.y);
-  float sz = max((tiles ? 0.5 : 0.35) * decorScale, pxM * 0.9);
+  float sz = max((tiles ? 0.6 : 0.5) * decorScale, pxM * 1.1);
   if (abs(r.x) < sz && abs(r.y) < sz * 0.45) {
     vec3 c = tiles ? lin(mix(vec3(0.55, 0.25, 0.17), vec3(0.32, 0.30, 0.30), step(0.5, hk.y)))
                    : lin(mix(vec3(0.30, 0.46, 0.16), vec3(0.62, 0.62, 0.22), hk.y));
