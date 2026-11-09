@@ -282,16 +282,22 @@ float rand(float n) { return fract(sin(n) * 43758.5453123); }
 
 // ===================== Procedural trees and houses =====================
 // Drawn per pixel in the few cells just above the ground. Each object sits in a fixed "slot" along x (world
-// anchored), with its kind, size and resistance derived from a hash of the slot index. The ground state of
-// the column it stands on (type, vegetation, snow, storm damage stored in the surface cell's CLOUD channel by
-// the boundary shader) decides what is drawn. Only 3 columns are sampled per pixel, so the cost stays small.
+// anchored), with its kind, size and resistance derived from a hash of the slot index. The ground state of the
+// column it stands on decides what is drawn:
+//  - land: vegetation 50..127 (set by the Land brush intensity) = tree density, from isolated trees to a closed
+//    forest with a second, darker row behind and undergrowth;
+//  - urban: vegetation 0..75 (set by the Urban brush intensity) = house density, from hamlet to dense centre;
+//  - storm damage, from the boundary shader: strongest sustained gust felt there, |value| 0..1 = 50..200 km/h,
+//    sign = direction it blew (which way trees fall). Each species and building has its own thresholds.
+// Ground columns are read lazily and cached, so the cost stays small.
 
 struct Column {
   bool valid;      // false when this row is inside the ground at that column
   float groundTop; // absolute y (cells) of the ground surface
   int type;
   float vegetation;
-  float damage;
+  float gust;      // strongest sustained gust felt here, km/h (0 = none above 50 km/h)
+  float fallDir;   // +1 / -1: direction of that gust
   float snow;
   float soilMoisture;
 };
@@ -311,143 +317,193 @@ Column sampleColumn(float colX, float row)
   vec4 wa = texture(waterTex, tcS);
   c.type = ws[TYPE];
   c.vegetation = float(ws[VEGETATION]);
-  c.damage = clamp(wa[CLOUD], 0.0, 1.0);
+  float d = clamp(abs(wa[CLOUD]), 0.0, 1.0);
+  c.gust = d > 0.0 ? 50.0 + 150.0 * d : 0.0;
+  c.fallDir = wa[CLOUD] < 0.0 ? -1.0 : 1.0;
   c.snow = wa[SNOW];
   c.soilMoisture = wa[SOIL_MOISTURE];
   return c;
 }
 
 float slotHash(float i, float k) { return fract(sin(i * 127.1 + k * 311.7) * 43758.5453); }
+vec4 hash4(float n) // 4 cheap pseudo-random values in 0..1 (no sin), for the leaf clumps
+{
+  vec4 p = fract(vec4(n) * vec4(0.1031, 0.1030, 0.0973, 0.1099));
+  p += dot(p, p.wzxy + 33.33);
+  return fract((p.xxyz + p.yzzw) * p.zywx);
+}
+vec3 lin(vec3 c) { return pow(c, vec3(GAMMA)); }
 
 // Signed horizontal offset of a stem at height v (0..h), bent by the wind: quadratic deflection like a cantilever.
 float stemLean(float v, float h, float bend) { return bend * h * (v / h) * (v / h); }
 
-// Returns rgb + alpha of the tree covering point (dx, v) in meters relative to the tree base, or alpha 0.
-vec4 drawTree(float dx, float v, float h, float kind, float bend, float damage, float seed, float pxM, Column col)
+// Species: 0 oak (chêne), 1 pine (pin), 2 poplar (peuplier), 3 birch (bouleau).
+// Damage thresholds in km/h: x = leaves (needles) torn, y = branches broken, z = trunk snapped / uprooted.
+vec3 speciesThresholds(int sp) { return sp == 0 ? vec3(85., 115., 175.) : sp == 1 ? vec3(140., 105., 140.) : sp == 2 ? vec3(70., 90., 130.) : vec3(70., 95., 165.); }
+vec3 speciesLeaf(int sp) { return sp == 0 ? vec3(0.25, 0.42, 0.16) : sp == 1 ? vec3(0.14, 0.31, 0.18) : sp == 2 ? vec3(0.42, 0.56, 0.23) : vec3(0.52, 0.65, 0.28); }
+vec4 speciesCrown(int sp) { return sp == 0 ? vec4(0.44, 0.32, 0.62, 8.) : sp == 2 ? vec4(0.16, 0.42, 0.56, 6.) : vec4(0.30, 0.33, 0.62, 7.); } // rx, ry, centre height (share of h), clumps
+
+// Standing (or fallen, already in the tree's own frame) tree at point (dx, v), meters from its base.
+// Returns rgb + alpha 0 when nothing. vMin: only parts above that height are drawn (the broken top).
+vec4 treeShape(float dx, float v, float h, int sp, float bend, float leafLoss, bool limbs, float seed, float pxM, float shadeMul, Column col, float vMin, float vMax)
 {
-  vec3 bark = pow(vec3(0.33, 0.24, 0.16), vec3(GAMMA));
-  float n = texture(noiseTex, vec2(dx, v) * 0.08 + seed * 7.3).r; // leafy texture
-  vec3 leaf = kind < 0.6 ? mix(vec3(0.07, 0.20, 0.05), vec3(0.16, 0.34, 0.09), n)    // broadleaf
-                         : mix(vec3(0.03, 0.12, 0.05), vec3(0.07, 0.20, 0.09), n);   // conifer
+  if (v < vMin || v > vMax || v < 0.0) return vec4(0.0);
+  vec3 bark = sp == 3 ? lin(vec3(0.90, 0.88, 0.83)) : sp == 2 ? lin(vec3(0.54, 0.50, 0.44)) : lin(vec3(0.36, 0.27, 0.19));
+  vec3 leaf = lin(speciesLeaf(sp));
   float dry = max(0.5 - col.soilMoisture * (0.5 / fullGreenSoilMoisture), 0.0);
-  leaf = mix(leaf, dryGrassCol * 0.6, dry * 0.6);
+  leaf = mix(leaf, dryGrassCol * 0.6, dry * 0.5);
   float snowCover = clamp(col.snow / fullWhiteSnowHeight, 0.0, 1.0);
+  float u = dx - stemLean(v, h, bend);
+  float n = 0.5; // leafy texture, fetched only where a crown is hit
 
-  bool conifer = kind >= 0.6;
-  bool poplar = kind >= 0.45 && kind < 0.6;
-
-  // Damage stages (per-tree resistance already applied): 0.25 leaves torn, 0.55 branches broken, 0.8 trunk snapped
-  bool snapped = damage > 0.8;
-  float standH = snapped ? h * (conifer ? 0.55 : 0.35) : h;
-
-  // fallen top lying on the ground, toward a fixed side for this tree
-  if (snapped) {
-    float dir = seed > 0.5 ? 1.0 : -1.0;
-    float along = dx * dir;
-    float logLen = h - standH;
-    if (along > 0.0 && along < logLen && v < max(h * 0.05, pxM)) {
-      float t = along / logLen;
-      if (t > 0.55 && !conifer && n > 0.45) return vec4(mix(leaf, bark, 0.5), 1.0); // broken crown on the ground
-      return vec4(bark, 1.0);
+  if (sp == 1) { // pine: dense tiers of needles
+    float base = h * 0.16;
+    float tierH = (h - base) / 7.0;
+    if (v > base) {
+      float f = (v - base) / (h - base);
+      float ft = fract((v - base) / tierH);
+      float halfW = h * 0.21 * (1.0 - f) * (0.78 + 0.22 * (1.0 - ft)) * (1.0 - leafLoss * 0.35) + pxM * 0.6;
+      if (abs(u) < halfW * 1.04) n = texture(noiseTex, vec2(dx, v) * 0.11 + seed * 7.3).r;
+      if (abs(u) < halfW * (0.92 + 0.12 * n)) {
+        vec3 c = leaf * mix(0.62, 1.12, smoothstep(0.0, 0.6, ft)) * (0.9 + 0.2 * n); // dark underside of each tier
+        if (snowCover > 0.0 && ft > 0.7) c = mix(c, vec3(1.0), snowCover);
+        return vec4(c * shadeMul, 1.0);
+      }
     }
-  }
-
-  float lean = stemLean(min(v, standH), h, bend);
-  float u = dx - lean;
-
-  // trunk
-  float trunkTop = conifer ? standH : min(standH, h * (poplar ? 0.9 : 0.62));
-  float trunkW = max(h * (conifer ? 0.03 : 0.04) * (1.25 - 0.6 * v / h), pxM * 0.7);
-  if (v < trunkTop && abs(u) < trunkW * 0.5) {
-    if (snapped && v > standH - max(0.4, pxM)) return vec4(pow(vec3(0.85, 0.75, 0.55), vec3(GAMMA)), 1.0); // splintered wood
-    return vec4(bark, 1.0);
-  }
-  if (snapped && !conifer) return vec4(0.0); // broadleaf crown is gone with the trunk
-
-  float leafLoss = clamp((damage - 0.25) / 0.5, 0.0, 1.0);
-
-  if (conifer) {
-    float crownBase = h * 0.18;
-    if (v < crownBase || v > standH) return vec4(0.0);
-    float f = (v - crownBase) / (h - crownBase);
-    float halfW = h * 0.2 * (1.0 - f) * (0.72 + 0.28 * fract(v / (h * 0.13))) + pxM * 0.5; // tiered silhouette
-    halfW *= 1.0 - leafLoss * 0.35;
-    if (abs(u) < halfW && n > leafLoss * 0.55) {
-      vec3 c = leaf;
-      if (snowCover > 0.0 && fract(v / (h * 0.13)) > 0.75) c = mix(c, vec3(1.0), snowCover); // snow on the tiers
-      return vec4(c, 1.0);
-    }
+    float tw = max(h * 0.035 * (1.2 - 0.7 * v / h), pxM * 0.7);
+    if (abs(u) < tw * 0.5) return vec4(bark * shadeMul, 1.0);
     return vec4(0.0);
   }
 
-  // broadleaf / poplar crown: a few lobes with a noisy edge, thinning out as leaves are torn off
-  vec2 cr = poplar ? vec2(0.13, 0.36) * h : vec2(0.30, 0.23) * h;
-  float cy = poplar ? h * 0.6 : h * 0.68;
-  float shrink = 1.0 - leafLoss * 0.45;
-  float d = 2.0;
-  for (int k = -1; k <= 1; k++) {
-    float kx = float(k) * cr.x * 0.55;
-    float ky = cy - abs(float(k)) * cr.y * 0.35;
-    float lean2 = stemLean(ky, h, bend);
-    vec2 r = cr * (k == 0 ? 1.0 : 0.7) * shrink;
-    vec2 q = vec2(dx - lean2 - kx, v - ky) / max(r, vec2(pxM));
-    d = min(d, length(q));
+  // broadleaf crown: one lumpy outline (several lobes around the edge) filled with leaf clumps shaded by a noise
+  // relief lit from above. Closed: the sky only shows through once the storm tears leaves off.
+  vec4 cr = speciesCrown(sp);
+  float rx = cr.x * h, ry = cr.y * h, cy = cr.z * h;
+  float cu = dx - stemLean(cy, h, bend); // crown is bent as a block (cheap, looks right)
+  vec2 e = vec2(cu / rx, (v - cy) / ry);
+  float q = length(e);
+  if (q < 1.25) {
+    float th = atan(e.y, e.x);
+    float lobes = sp == 2 ? 3.0 : 5.0;
+    float edge = 1.0 + 0.11 * sin(lobes * th + seed * 6.3) + 0.07 * sin((lobes + 4.0) * th + seed * 11.1) - leafLoss * 0.3;
+    if (q < edge + 0.05) {
+      float clump = (sp == 2 ? 0.10 : 0.16) * h;                              // size of a leaf clump, m
+      vec2 pc = vec2(dx, v) / clump * 0.06 + seed * 3.7;
+      float b0 = texture(noiseTex, pc).r;
+      float b1 = texture(noiseTex, pc + vec2(0.0, 0.02)).r;                    // relief: clump tops catch the light
+      n = b0;
+      if (q < edge - 0.06 * b0 && b0 > leafLoss * 0.9) {
+        float light = 0.78 + 1.6 * (b1 - b0) + 0.22 * e.y;
+        light *= mix(0.75, 1.0, smoothstep(-1.0, 0.3, e.y));                   // crown base in shadow
+        vec3 c = leaf * clamp(light, 0.5, 1.25) * (0.92 + 0.16 * b0);
+        c = mix(c, vec3(0.95), snowCover * smoothstep(0.1, 0.8, e.y) * 0.6);
+        return vec4(c * shadeMul, 1.0);
+      }
+    }
   }
-  if (d < 1.0 - 0.25 * n && n > leafLoss * 0.75) {
-    vec3 c = leaf;
-    c = mix(c, vec3(0.95), snowCover * smoothstep(0.3, 1.0, v / h) * 0.6);
-    return vec4(c, 1.0);
+  // trunk, and broken limbs that show once the crown is torn
+  float trunkTop = h * (sp == 2 ? 0.5 : 0.55);
+  float tw = max(h * (sp == 0 ? 0.055 : 0.04) * (1.25 - 0.6 * v / h), pxM * 0.7);
+  if (v < trunkTop && abs(u) < tw * 0.5) {
+    if (sp == 3 && fract(v * 0.6 + seed * 3.0) < 0.12 && abs(u) < tw * 0.3) return vec4(lin(vec3(0.15)) * shadeMul, 1.0); // birch marks
+    return vec4(bark * shadeMul, 1.0);
   }
-  // bare branches show through when the crown is thinned or broken
-  if (leafLoss > 0.0 && d < 1.0) {
-    float lean3 = stemLean(v, h, bend);
-    float bx = abs(dx - lean3);
-    float branch = abs(bx - (v - trunkTop * 0.85) * 0.9);
-    if (v > trunkTop * 0.8 && branch < max(h * 0.012, pxM * 0.6) && damage < 0.65) return vec4(bark, 1.0);
+  if (limbs && v > trunkTop * 0.9 && v < h * 0.85) {
+    float bx = abs(dx - stemLean(v, h, bend));
+    if (abs(bx - (v - trunkTop * 0.9) * 0.8) < max(h * 0.014, pxM * 0.6)) return vec4(bark * shadeMul, 1.0);
   }
   return vec4(0.0);
 }
 
+// One tree at (dx, v) with its storm stage. Fallen parts are drawn by rotating the point into the tree's frame.
+vec4 drawTree(float dx, float v, float h, int sp, float bend, float resist, float seed, float pxM, float shadeMul, Column col)
+{
+  vec3 thr = speciesThresholds(sp) * resist;
+  float g = col.gust;
+  float leafLoss = g > thr.y ? 0.55 : g > thr.x ? 0.28 : 0.0;
+  bool limbs = g > thr.y;
+  if (g <= thr.z)
+    return treeShape(dx, v, h, sp, bend, leafLoss, limbs, seed, pxM, shadeMul, col, 0.0, 1e9);
+
+  // felled: oak, pine and poplar snap (pine near the top), birch is uprooted
+  bool uproot = sp == 3;
+  float pivot = uproot ? 0.0 : h * (sp == 1 ? 0.6 : 0.35);
+  vec4 cr = speciesCrown(sp);
+  float cyH = sp == 1 ? h * 0.75 : cr.z * h, crR = sp == 1 ? h * 0.08 : cr.y * h * 0.85;
+  float arm = cyH - pivot;
+  float cA = (crR - pivot) / max(arm, 0.01);
+  float A = cA <= -1.0 ? 1.62 : cA >= 1.0 ? 0.2 : min(1.62, acos(cA)); // stops when the crown rests on the ground
+  float drop = uproot ? 0.0 : max(0.0, sp == 1 ? pivot - h * 0.12 : pivot + arm * cos(A) - crR);
+  float dir = col.fallDir;
+
+  // standing stump (snapped trees), splintered at the top
+  if (!uproot) {
+    float tw = max(h * (sp == 0 ? 0.055 : 0.04) * 1.15, pxM * 0.7);
+    if (v < pivot && abs(dx) < tw * 0.5) {
+      vec3 c = v > pivot - max(0.4, pxM) ? lin(vec3(0.85, 0.75, 0.55)) : (sp == 2 ? lin(vec3(0.54, 0.50, 0.44)) : lin(vec3(0.36, 0.27, 0.19)));
+      return vec4(c * shadeMul, 1.0);
+    }
+  } else if (v < h * 0.07 && length(vec2(dx / (h * 0.16), v / (h * 0.07))) < 1.0) {
+    return vec4(lin(vec3(0.29, 0.23, 0.16)) * shadeMul, 1.0); // root plate torn out of the ground
+  }
+  // the fallen part: rotate the point back into the tree's upright frame
+  vec2 p = vec2(dx, v + drop) - vec2(0.0, pivot);
+  float ang = A * dir;
+  vec2 q = vec2(cos(ang) * p.x - sin(ang) * p.y, sin(ang) * p.x + cos(ang) * p.y) + vec2(0.0, pivot);
+  return treeShape(q.x, q.y, h, sp, 0.0, 0.55, false, seed, pxM, shadeMul, col, pivot, 1e9);
+}
+
 // Returns rgb + alpha of the house covering point (dx, v) in meters relative to its base center; lit = window lit at night.
-vec4 drawHouse(float dx, float v, float kind, float damage, float seed, float pxM, Column col, bool night, out bool lit)
+// kind: pavillon, longère, chalet or small block. gust: strongest gust felt, km/h; resist: per-building factor.
+vec4 drawHouse(float dx, float v, float kind, float gust, float resist, float seed, float pxM, Column col, bool night, out bool lit)
 {
   lit = false;
-  bool longere = kind > 0.6 && kind <= 0.85;
-  bool block = kind > 0.85;
-  float w = (block ? 14.0 : longere ? 18.0 : 11.0) * decorScale;
-  float wallH = (block ? 10.0 : longere ? 4.5 : 5.5) * decorScale;
-  float roofH = (block ? 0.8 : 4.0) * decorScale;
+  bool longere = kind > 0.55 && kind <= 0.72;
+  bool chalet = kind > 0.72 && kind <= 0.88;
+  bool block = kind > 0.88;
+  float w = (block ? 14.0 : longere ? 18.0 : chalet ? 10.0 : 11.0) * decorScale;
+  float wallH = (block ? 10.0 : longere ? 4.5 : chalet ? 4.0 : 5.5) * decorScale;
+  float roofH = (block ? 0.8 : chalet ? 4.5 : 4.0) * decorScale;
   float halfW = w * 0.5;
 
-  vec3 wallCol = pow(block ? vec3(0.80, 0.78, 0.74) : longere ? vec3(0.66, 0.60, 0.50) : vec3(0.88, 0.82, 0.70), vec3(GAMMA));
-  vec3 roofCol = pow(block ? vec3(0.40, 0.40, 0.42) : (seed > 0.4 ? vec3(0.58, 0.25, 0.17) : vec3(0.30, 0.32, 0.35)), vec3(GAMMA));
+  vec3 wallCol = lin(block ? vec3(0.80, 0.78, 0.74) : longere ? vec3(0.66, 0.60, 0.50) : chalet ? vec3(0.60, 0.42, 0.26) : vec3(0.88, 0.82, 0.70));
+  vec3 roofCol = lin(block ? vec3(0.40, 0.40, 0.42) : chalet ? vec3(0.24, 0.23, 0.22) : (seed > 0.4 ? vec3(0.58, 0.25, 0.17) : vec3(0.30, 0.32, 0.35)));
   float snowCover = clamp(col.snow / fullWhiteSnowHeight, 0.0, 1.0);
+
+  // damage stages: tiles torn off (100 km/h), roof ripped open (140), roof torn off (185)
+  float holes = gust > 140.0 * resist ? 0.55 : gust > 100.0 * resist ? 0.22 : 0.0;
+  bool roofGone = gust > 185.0 * resist;
 
   if (abs(dx) < halfW && v < wallH) {
     // windows on a 3 m grid, door in the middle of houses
     float gx = fract((dx + halfW) / (3.0 * decorScale));
     float gy = fract(v / (3.0 * decorScale));
     bool door = !block && abs(dx) < 0.6 * decorScale && v < 2.2 * decorScale;
-    if (door) return vec4(pow(vec3(0.30, 0.20, 0.13), vec3(GAMMA)), 1.0);
+    if (door) return vec4(lin(vec3(0.30, 0.20, 0.13)), 1.0);
     if (gx > 0.35 && gx < 0.72 && gy > 0.35 && gy < 0.78 && abs(dx) < halfW - 1.0 * decorScale) {
       float wid = floor((dx + halfW) / (3.0 * decorScale)) + floor(v / (3.0 * decorScale)) * 17.0;
-      if (night && slotHash(seed * 91.0 + wid, 3.0) > 0.35) { lit = true; return vec4(pow(vec3(1.0, 0.80, 0.45), vec3(GAMMA)), 1.0); }
-      return vec4(pow(night ? vec3(0.08, 0.10, 0.14) : vec3(0.36, 0.46, 0.55), vec3(GAMMA)), 1.0);
+      if (night && slotHash(seed * 91.0 + wid, 3.0) > 0.35) { lit = true; return vec4(lin(vec3(1.0, 0.80, 0.45)), 1.0); }
+      return vec4(lin(night ? vec3(0.08, 0.10, 0.14) : vec3(0.36, 0.46, 0.55)), 1.0);
     }
     return vec4(wallCol, 1.0);
   }
   float rv = v - wallH;
   if (rv >= 0.0 && rv < roofH) {
     float roofHalf = block ? halfW + 0.3 * decorScale : (halfW + 0.6 * decorScale) * (1.0 - rv / roofH);
+    if (roofGone) { // bare rafters only
+      if (block) return vec4(0.0);
+      float k = fract((dx + halfW) / (2.2 * decorScale));
+      if (abs(dx) < roofHalf && (k < 0.12 || abs(abs(dx) - roofHalf) < 0.25 * decorScale) && rv < roofH * 0.7) return vec4(lin(vec3(0.22, 0.15, 0.10)), 1.0);
+      return vec4(0.0);
+    }
     if (abs(dx) < max(roofHalf, pxM * 0.5)) {
-      float holes = clamp((damage - 0.25) / 0.6, 0.0, 1.0);
       float n = texture(noiseTex, vec2(dx, rv) * 0.35 + seed * 5.1).r;
-      if (n < holes * 0.7) return vec4(pow(vec3(0.22, 0.15, 0.10), vec3(GAMMA)), 1.0); // torn-off tiles: rafters show
+      if (n < holes) return vec4(lin(vec3(0.22, 0.15, 0.10)), 1.0); // torn-off tiles: rafters show
       if (snowCover > 0.0 && rv > roofH - (block ? roofH : 0.6 * decorScale) - (roofHalf - abs(dx)) * 0.15) return vec4(mix(roofCol, vec3(1.0), snowCover), 1.0);
       return vec4(roofCol, 1.0);
     }
   }
-  if (!block && !longere && rv > roofH * 0.3 && rv < roofH * 0.9 && abs(dx - halfW * 0.45) < 0.45 * decorScale) return vec4(pow(vec3(0.45, 0.32, 0.25), vec3(GAMMA)), 1.0); // chimney
+  if (!block && !longere && !chalet && !roofGone && rv > roofH * 0.3 && rv < roofH * 0.9 && abs(dx - halfW * 0.45) < 0.45 * decorScale) return vec4(lin(vec3(0.45, 0.32, 0.25)), 1.0); // chimney
   return vec4(0.0);
 }
 
@@ -465,6 +521,8 @@ Column decorColumn(int ci, float colX, float row)
   return decorCols[ci];
 }
 
+float treeDensity(Column c) { return c.type == WALLTYPE_LAND ? clamp((c.vegetation - 50.0) / 77.0, 0.0, 1.0) : c.type == WALLTYPE_URBAN ? (1.0 - clamp(c.vegetation / 75.0, 0.0, 1.0)) * 0.35 : 0.0; }
+
 vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
 {
   lit = false;
@@ -474,49 +532,86 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
   float colX = floor(frag.x);
   for (int k = 0; k < 5; k++) decorHave[k] = false;
 
-  // houses first (in front of trees)
-  float houseSp = 24.0 * decorScale / cellHeight;                   // slot spacing in cells
+  // houses first (in front of trees). Slots every 20 m; the Urban brush intensity (stored as vegetation 0..75)
+  // decides how many are built: hamlet .. dense centre. Sizes never change.
+  float houseSp = 20.0 * decorScale / cellHeight;                   // slot spacing in cells
   float houseReach = min(10.0 * decorScale / cellHeight, 2.0);      // max half width of a house, in cells
   float hs0 = floor((frag.x - houseReach) / houseSp - 0.5), hs1 = floor((frag.x + houseReach) / houseSp + 0.5);
   for (int i = 0; i < 12; i++) {
     float s = hs0 + float(i);
     if (s > hs1) break;
-    float xc = (s + 0.5 + (slotHash(s, 1.0) - 0.5) * 0.3) * houseSp;
-    int ci = int(floor(xc) - colX) + 2;
-    if (ci < 0 || ci > 4 || slotHash(s, 2.0) < 0.15) continue;
-    Column c = decorColumn(ci, colX, row);
-    if (!c.valid || c.type != WALLTYPE_URBAN) continue;
-    vec4 hc = drawHouse((frag.x - xc) * cellHeight, (frag.y - c.groundTop) * cellHeight, slotHash(s, 3.0), c.damage * (0.8 + 0.4 * slotHash(s, 4.0)), slotHash(s, 5.0), pxM, c, night, lit);
-    if (hc.a > 0.0) return hc;
-  }
-
-  // trees
-  float windKmh = base.x * kmhPerRaw;
-  float treeSp = 8.0 * decorScale / cellHeight;
-  float treeReach = min(13.0 * decorScale / cellHeight, 2.0); // max crown radius + bend, in cells
-  float ts0 = floor((frag.x - treeReach) / treeSp - 0.5), ts1 = floor((frag.x + treeReach) / treeSp + 0.5);
-  for (int i = 0; i < 24; i++) {
-    float s = ts0 + float(i);
-    if (s > ts1) break;
-    float xc = (s + 0.5 + (slotHash(s, 11.0) - 0.5) * 0.8) * treeSp;
+    float xc = (s + 0.5 + (slotHash(s, 1.0) - 0.5) * 0.15) * houseSp;
     int ci = int(floor(xc) - colX) + 2;
     if (ci < 0 || ci > 4) continue;
     Column c = decorColumn(ci, colX, row);
-    if (!c.valid) continue;
-    bool land = c.type == WALLTYPE_LAND;
-    bool urbanTree = c.type == WALLTYPE_URBAN;
-    if (!land && !urbanTree) continue;
-    float density = clamp((c.vegetation - 50.0) / 77.0, 0.0, 1.0); // vegetation 50..127 = trees
-    if (urbanTree) density *= 0.35;
-    if (slotHash(s, 12.0) > density) continue;
-    float h = (14.0 + 20.0 * slotHash(s, 13.0)) * (0.6 + 0.4 * density) * decorScale;
-    float kind = slotHash(s, 14.0);
-    float stiff = kind >= 0.6 ? 0.8 : kind >= 0.45 ? 1.3 : 1.0; // conifers stiffer, poplars more flexible
-    float flutter = sin(iterNum * 0.03 + s * 1.7) * 0.03 * min(abs(windKmh) / 40.0, 1.0);
-    float bend = clamp(sign(windKmh) * pow(abs(windKmh) / 130.0, 2.0) * 0.45 * stiff + flutter, -0.6, 0.6);
-    float resist = 0.75 + 0.5 * slotHash(s, 15.0);
-    vec4 tc = drawTree((frag.x - xc) * cellHeight, (frag.y - c.groundTop) * cellHeight, h, kind, bend, c.damage / resist, slotHash(s, 16.0), pxM, c);
-    if (tc.a > 0.0) { isTree = true; return tc; }
+    if (!c.valid || c.type != WALLTYPE_URBAN) continue;
+    float houseDensity = clamp(c.vegetation / 75.0, 0.0, 1.0);
+    if (slotHash(s, 2.0) > 0.12 + 0.88 * houseDensity) continue;
+    vec4 hc = drawHouse((frag.x - xc) * cellHeight, (frag.y - c.groundTop) * cellHeight, slotHash(s, 3.0), c.gust, 0.9 + 0.2 * slotHash(s, 4.0), slotHash(s, 5.0), pxM, c, night, lit);
+    if (hc.a > 0.0) return hc;
+  }
+
+  // trees: a front row of slots every 6 m and, in dense woods, a darker back row in between. The Land brush
+  // intensity (vegetation 50..127) sets the share of filled slots: ~1 tree / 30 m up to a closed canopy.
+  float windKmh = base.x * kmhPerRaw;
+  float treeSp = 6.0 * decorScale / cellHeight;
+  float treeReach = min(16.0 * decorScale / cellHeight, 2.0); // max crown radius + bend, in cells
+  float flutterT = iterNum * 0.03;
+  Column cHere = decorColumn(2, colX, row);
+  int passes = cHere.valid && treeDensity(cHere) > 0.45 ? 2 : 1; // the back row only exists in dense woods
+  float vHere = cHere.valid ? (frag.y - cHere.groundTop) * cellHeight : 0.0;
+  for (int pass = 0; pass < 2; pass++) {
+    if (pass >= passes) break;
+    float off = pass == 0 ? 0.0 : 0.5;
+    float ts0 = floor((frag.x - treeReach) / treeSp - off - 0.5), ts1 = floor((frag.x + treeReach) / treeSp - off + 0.5);
+    for (int i = 0; i < 24; i++) {
+      float s = ts0 + float(i);
+      if (s > ts1) break;
+      float sid = s + off * 1000.0;
+      vec4 ha = hash4(sid * 3.17 + 11.0); // x: position jitter, y: filled?, z: species, w: height
+      float xc = (s + off + 0.5 + (ha.x - 0.5) * 0.6) * treeSp;
+      int ci = int(floor(xc) - colX) + 2;
+      if (ci < 0 || ci > 4) continue;
+      Column c = decorColumn(ci, colX, row);
+      if (!c.valid) continue;
+      float density = treeDensity(c);
+      float fill = pass == 0 ? min(1.0, 0.2 + 0.95 * density * density + 0.25 * density) : clamp((density - 0.5) * 2.2, 0.0, 1.0);
+      if (density <= 0.02 || ha.y > fill) continue;
+      int sp = ha.z < 0.35 ? 0 : ha.z < 0.6 ? 1 : ha.z < 0.75 ? 2 : 3;
+      vec2 hr = sp == 0 ? vec2(17., 24.) : sp == 1 ? vec2(20., 30.) : sp == 2 ? vec2(22., 32.) : vec2(14., 20.);
+      float h = mix(hr.x, hr.y, ha.w) * decorScale;
+      float dx = (frag.x - xc) * cellHeight;
+      float v = (frag.y - c.groundTop) * cellHeight;
+      if (v > h * 1.05 || abs(dx) > h * 1.05) continue; // cheap reject before shaping (fallen trees reach ~h)
+      float stiff = sp == 1 ? 0.8 : sp == 2 ? 1.3 : 1.0; // pines stiffer, poplars more flexible
+      float flutter = sin(flutterT + s * 1.7) * 0.03 * min(abs(windKmh) / 40.0, 1.0);
+      float bend = clamp(sign(windKmh) * pow(abs(windKmh) / 130.0, 2.0) * 0.3 * stiff + flutter, -0.35, 0.35);
+      if (c.gust < 110.0) { // certainly standing: reject points outside the bent crown's width
+        float halfW = sp == 1 ? 0.23 * h : speciesCrown(sp).x * h * 1.3;
+        if (abs(dx - stemLean(min(v, h), h, bend)) > halfW + abs(bend) * 0.4 * h + pxM) continue; // crown is bent as a block
+      }
+      vec4 hb = hash4(sid * 5.31 + 77.0); // x: resistance, y: seed
+      vec4 tc = drawTree(dx, v, h, sp, bend, 0.88 + 0.24 * hb.x, hb.y, pxM, pass == 0 ? 1.0 : 0.72, c);
+      if (tc.a > 0.0) { isTree = true; return tc; }
+    }
+  }
+
+  // undergrowth: shrubs filling the space under the crowns of a dense wood
+  Column c0 = cHere;
+  if (c0.valid && c0.type == WALLTYPE_LAND) {
+    float density = treeDensity(c0);
+    float ub = clamp((density - 0.4) / 0.4, 0.0, 1.0);
+    if (ub > 0.0) {
+      float v = (frag.y - c0.groundTop) * cellHeight;
+      float xm = frag.x * cellHeight;
+      float shrubH = (1.5 + 2.5 * texture(noiseTex, vec2(xm * 0.05, 0.37)).r) * ub * decorScale * 0.6;
+      if (v < shrubH) {
+        float n = texture(noiseTex, vec2(xm, v) * 0.15).r;
+        vec3 leaf = lin(vec3(0.20, 0.34, 0.14)) * (0.65 + 0.4 * n) * mix(0.7, 1.0, v / max(shrubH, 0.01));
+        isTree = true;
+        return vec4(leaf, 1.0);
+      }
+    }
   }
   return vec4(0.0);
 }
@@ -694,7 +789,7 @@ void main()
 
       bool decorDrawn = false;
       // tallest object: trees up to 34 m, apartment blocks ~11 m, times decorScale -> skip cells above it
-      float decorTopCells = 34.0 * decorScale / cellHeight + 1.0;
+      float decorTopCells = 33.0 * decorScale / cellHeight + 1.0;
       if (newDecor > 0.5 && wall[DISTANCE] != 0 && wall[VERT_DISTANCE] >= 1 && float(wall[VERT_DISTANCE]) <= decorTopCells) {
         bool decorLit, decorTree;
         vec4 dc = drawDecor(fragCoord, nightTime, decorLit, decorTree);

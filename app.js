@@ -381,7 +381,8 @@ var windDisplayMultiplier = 10.0; // display mode 4 color scale, set from guiCon
 
 // Velocity unit conversions for the current grid: raw sim velocity is in cells/iteration, and the sim's pressure
 // waves ("speed of sound") travel exactly 1 cell/iteration, so the stable wind range depends on the cell size.
-const WIND_LIMIT_DEFAULT_RAW = 0.6; // default horizontal wind limit, cells/iteration (soft start at 2/3 of it)
+const WIND_LIMIT_DEFAULT_KMH = 150; // default horizontal wind limit (reached exactly, no effect below 90% of it)
+const JET_THRESHOLD_KMH = 120;      // jet anti-waves only act where the wind is above this
 function kmhPerRawVelocity(simHeight, resY) { return (simHeight / resY) / (timePerIteration * 3600) * 3.6; }
 
 function sampleIsInvalid(s) { return isNaN(s.t) || isNaN(s.td) || isNaN(s.vel); }
@@ -1013,6 +1014,7 @@ const guiControls_default = {
   IterPerFrame : 10,
   auto_IterPerFrame : true,
   sound : true,
+  damageVolume : 0.8,                // volume of the storm damage sounds (trees falling, tiles, roofs)
   dryLapseRate : 10.0,     // Real: 9.8 degrees / km
   simHeight : 12000,       // meters
   gridResY : 600,          // vertical grid resolution (cells). Changing it restarts the simulation.
@@ -1026,13 +1028,12 @@ const guiControls_default = {
   activeSoundingStation : 'Munich', // matches createStationSelect()'s own default (id 10868) on the setup screen
   soundingDate : '2025-06-15',      // in-game Sounding Date (YYYY-MM-DD); re-seeded from the setup screen's own date once mainScript() starts -- see setupDatGui()
   soundingHour : 12,                // in-game Sounding Hour (UTC, 0-23)
-  windCeilingAlt : 8000,
-  windLimitKmh : 0,
+  windLimitKmh : 150,
   shearSmoothing : 1.0,
   classicWind : false,
   newDecor : true,                  // procedural trees (bending, storm damage) and small houses instead of the texture strips
   decorScale : 2.5,                 // visual size multiplier of trees and houses (real size is barely a few pixels at usual zooms)
-  stormDamage : true,               // strong surface winds damage trees and roofs (persistent, slowly recovers)              // true = original wind physics (no speed limiter, no Richardson mixing) for comparison
+  stormDamage : true,               // strong surface winds damage trees and roofs (persistent until the ground is repainted)
   windDisplayKmh : 0,               // horizontal wind speed shown at full color in display mode 4; 0 = automatic (original scale)             // 0..1: smooths overly sharp vertical wind shear (jet edges) to prevent Kelvin-Helmholtz waves                 // flow speed limit (km/h) for numerical stability; 0 = automatic safe value for the grid
   skyEffects : true,                // sun disc, moon, stars and sunrise/sunset sky colors in the background            // meters. Above this altitude the wind (global wind force + sounding wind) fades smoothly to 0 at the top of the map
 };
@@ -3217,6 +3218,129 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
   }
 
+  // Storm damage sounds, synthesized (no files): a branch snapping, a tree falling, roof tiles flying off, a roof torn off.
+  class DamageSoundGenerator
+  {
+    constructor(ctx)
+    {
+      this.audioCtx = ctx;
+      this.active = 0; // sounds currently playing, capped so a big storm never piles up dozens
+      const len = Math.ceil(ctx.sampleRate * 1.0);
+      this.noise = ctx.createBuffer(1, len, ctx.sampleRate);
+      const d = this.noise.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    }
+
+    burst(dest, t0, dur, freq, q, peak, type = 'bandpass')
+    {
+      const ctx = this.audioCtx;
+      const s = ctx.createBufferSource();
+      s.buffer = this.noise;
+      const f = ctx.createBiquadFilter();
+      f.type = type;
+      f.frequency.value = freq;
+      f.Q.value = q;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(peak, t0 + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      s.connect(f).connect(g).connect(dest);
+      s.start(t0, Math.random() * 0.5);
+      s.stop(t0 + dur + 0.02);
+    }
+
+    thud(dest, t0, peak)
+    {
+      const ctx = this.audioCtx;
+      const o = ctx.createOscillator();
+      o.frequency.setValueAtTime(90, t0);
+      o.frequency.exponentialRampToValueAtTime(38, t0 + 0.35);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(peak, t0 + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
+      o.connect(g).connect(dest);
+      o.start(t0);
+      o.stop(t0 + 0.55);
+      this.burst(dest, t0, 0.35, 220, 0.7, peak * 0.8, 'lowpass');
+    }
+
+    crack(d, t)
+    {
+      for (let i = 0; i < 4; i++)
+        this.burst(d, t + i * 0.025 + Math.random() * 0.02, 0.05 + Math.random() * 0.05, 1800 + Math.random() * 2200, 3, 0.9 - i * 0.15);
+      this.burst(d, t + 0.12, 0.25, 4500, 1, 0.12);
+      return 0.5;
+    }
+
+    fall(d, t)
+    {
+      const ctx = this.audioCtx;
+      const o = ctx.createOscillator(); // creaking trunk: low sawtooth with a wobbling pitch
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(70, t);
+      o.frequency.linearRampToValueAtTime(48, t + 0.9);
+      const lfo = ctx.createOscillator();
+      lfo.frequency.value = 23;
+      const lg = ctx.createGain();
+      lg.gain.value = 9;
+      lfo.connect(lg).connect(o.frequency);
+      const f = ctx.createBiquadFilter();
+      f.type = 'bandpass';
+      f.frequency.value = 600;
+      f.Q.value = 4;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.35, t + 0.15);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.95);
+      o.connect(f).connect(g).connect(d);
+      o.start(t);
+      lfo.start(t);
+      o.stop(t + 1);
+      lfo.stop(t + 1);
+      this.crack(d, t + 0.05);
+      this.burst(d, t + 0.5, 0.8, 3000, 0.5, 0.25, 'highpass'); // leaves swishing
+      this.thud(d, t + 1.15, 1.0);
+      for (let i = 0; i < 5; i++)
+        this.burst(d, t + 1.2 + i * 0.06 + Math.random() * 0.05, 0.08, 1200 + Math.random() * 1500, 2, 0.25);
+      return 1.8;
+    }
+
+    tiles(d, t)
+    {
+      for (let i = 0; i < 9; i++)
+        this.burst(d, t + i * 0.07 + Math.random() * 0.08, 0.06, 2500 + Math.random() * 2500, 8, 0.55);
+      for (let i = 0; i < 4; i++)
+        this.burst(d, t + 0.7 + i * 0.05 + Math.random() * 0.04, 0.12, 1700 + Math.random() * 1500, 5, 0.6);
+      return 1.1;
+    }
+
+    roof(d, t)
+    {
+      this.burst(d, t, 0.6, 900, 1.2, 0.5); // tearing
+      for (let i = 0; i < 6; i++)
+        this.burst(d, t + 0.05 + i * 0.07, 0.06, 1400 + Math.random() * 1800, 3, 0.6);
+      this.thud(d, t + 0.8, 0.7);
+      this.tiles(d, t + 0.75);
+      return 2.0;
+    }
+
+    play(name, volume, pan)
+    {
+      if (this.active >= 4 || volume < 0.01)
+        return;
+      const ctx = this.audioCtx;
+      const g = ctx.createGain();
+      g.gain.value = Math.min(volume, 1.5);
+      const p = ctx.createStereoPanner();
+      p.pan.value = clamp(pan, -1, 1);
+      g.connect(p).connect(ctx.destination);
+      this.active++;
+      const dur = this[name](g, ctx.currentTime + 0.02 + Math.random() * 0.15);
+      setTimeout(() => { this.active--; g.disconnect(); }, dur * 1000 + 300);
+    }
+  }
+
   class SoundSystem
   {
     audioCtx;
@@ -3241,6 +3365,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     {
       this.audioCtx = new window.AudioContext();
       this.jetEngineSound = new JetEngineSoundGenerator(this.audioCtx);
+      this.damageSound = new DamageSoundGenerator(this.audioCtx);
       // load sound files asynchronously
       this.loadThunderSounds('cc', 13).then(buffers => { this.thunderCCSounds = buffers; });
       this.loadThunderSounds('cg', 13).then(buffers => { this.thunderCGSounds = buffers; });
@@ -3340,6 +3465,50 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       let soundArray = intensity > 1.0 ? this.thunderCGSounds : this.thunderCCSounds;
       let randomThunderSound = soundArray[Math.floor(Math.random() * soundArray.length)];
       this.playOnce(randomThunderSound, intensity / (distance * 0.001), leftRightBalance, soundDelay);
+    }
+
+    // Called twice a second with the ground state of every column (see damageProbeShader) and the previous damage.
+    // Plays what just broke: the strongest gust felt there crossed a stage (km/h, same scale as the display).
+    soundStormDamage(values, prev)
+    {
+      const gustOf = d => d > 0 ? 50 + 150 * d : 0;
+      const camXnorm = 1. - (cam.curXpos + 1.0) / 2.0;
+      const camDistFromSim = cellHeight * sim_res_x * 0.5 / cam.curZoom;
+      const events = [];
+      for (let x = 0; x < sim_res_x; x++) {
+        const d = Math.abs(values[x * 4]);
+        if (d <= prev[x] + 1e-6)
+          continue;
+        const g0 = gustOf(prev[x]), g1 = gustOf(d);
+        const type = values[x * 4 + 1], veg = values[x * 4 + 2];
+        const crossed = t => g0 < t && g1 >= t;
+        let name = null;
+        if (type == 1 && veg >= 55) // land with trees
+          name = crossed(135) || crossed(170) ? 'fall' : crossed(90) || crossed(110) ? 'crack' : null;
+        else if (type == 4) // town
+          name = crossed(185) ? 'roof' : crossed(100) || crossed(140) ? 'tiles' : null;
+        if (!name)
+          continue;
+        const xNorm = (x + 0.5) / sim_res_x;
+        let dx = xNorm - camXnorm;
+        dx -= Math.round(dx); // the map wraps around
+        const hor = dx * cellHeight * sim_res_x;
+        const vec = new Vec2D(camDistFromSim, hor);
+        events.push({ name, dist : vec.mag(), pan : -vec.angle() });
+      }
+      if (events.length == 0)
+        return;
+      events.sort((a, b) => a.dist - b.dist); // nearest first, at most a few per check
+      const seen = {};
+      let n = 0;
+      for (const e of events) {
+        if (n >= 3)
+          break;
+        if ((seen[e.name] = (seen[e.name] || 0) + 1) > 2)
+          continue; // many columns break at once in a gust front: a couple of each sound is enough
+        this.damageSound.play(e.name, guiControls.damageVolume * 1500 / Math.max(e.dist, 300), e.pan);
+        n++;
+      }
     }
 
     playOnce(buffer, volume = 1, leftRightBalance = 0, delay = 0)
@@ -5062,7 +5231,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     setupDatGui(JSON.stringify(guiControls_default));
     guiControls.simHeight = sim_height;
     guiControls.globalEffectsEndAlt = sim_height;
-    guiControls.windCeilingAlt = Math.round(sim_height * 0.66 / 100) * 100;
 
     if (applySoundingAtStart && soundingData)
       guiControls.soundingForcing = 1.0; // the sounding picked on the home screen shapes the atmosphere right away
@@ -5093,13 +5261,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   {
     const kmhPerRaw = kmhPerRawVelocity(guiControls.simHeight, sim_res_y);
     if (!(guiControls.windLimitKmh > 0))
-      guiControls.windLimitKmh = Math.round(WIND_LIMIT_DEFAULT_RAW * kmhPerRaw);
+      guiControls.windLimitKmh = WIND_LIMIT_DEFAULT_KMH;
     const velMax = guiControls.classicWind ? 1e6 : guiControls.windLimitKmh / kmhPerRaw;
     gl.useProgram(velocityProgram);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'velMax'), velMax);
     gl.useProgram(advectionProgram);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'shearSmoothing'), guiControls.classicWind ? 0.0 : guiControls.shearSmoothing);
-    simVelTargetMax = velMax * 0.67;
+    simVelTargetMax = velMax * 0.9;
+    gl.uniform1f(gl.getUniformLocation(advectionProgram, 'jetThresholdRaw'), JET_THRESHOLD_KMH / kmhPerRaw);
     updateSoundingForcingUniforms(); // re-clamp the sounding wind targets to the new limit
   }
 
@@ -5117,7 +5286,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'), guiControls.dragMultiplier);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), guiControls.wind);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'uWindMultiplier'), windMultiplier); // must never be left at WebGL's implicit 0.0 default, or all wind force is silently suppressed
-    gl.uniform1f(gl.getUniformLocation(velocityProgram, 'windTaperStart'), guiControls.windCeilingAlt / guiControls.simHeight);
     gl.useProgram(lightingProgram);
     gl.uniform1f(gl.getUniformLocation(lightingProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
     gl.uniform1f(gl.getUniformLocation(lightingProgram, 'greenhouseGases'), guiControls.greenhouseGases);
@@ -5132,7 +5300,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'soundingForcing'), guiControls.soundingForcing);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalEffectsStartAlt'), guiControls.globalEffectsStartAlt / guiControls.simHeight);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalEffectsEndAlt'), guiControls.globalEffectsEndAlt / guiControls.simHeight);
-    gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windTaperStart'), guiControls.windCeilingAlt / guiControls.simHeight);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'shearSmoothing'), guiControls.classicWind ? 0.0 : guiControls.shearSmoothing);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'cellHeightM'), guiControls.simHeight / sim_res_y);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'dtSeconds'), timePerIteration * 3600);
@@ -5240,16 +5407,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     fluidParams_folder.add(guiControls, 'resetWind').name('Réinitialiser les vents');
 
-    // Wind ceiling: the wind force and the sounding's wind target both fade smoothly to 0 between this
-    // altitude and the top of the map, so jet-stream winds never slam into the rigid top boundary. Set it to
-    // the full sim height to disable.
     // Wind speed limit: the sim's pressure waves move 1 cell per iteration, so how fast the wind can get before the
     // flow becomes unstable depends on the cell size (coarser vertical resolution = faster stable winds).
     {
       const simHeightNow = guiControlsFromSaveFile == null ? sim_height : guiControls.simHeight;
       const kmhPerRaw = kmhPerRawVelocity(simHeightNow, sim_res_y);
       if (!(guiControls.windLimitKmh > 0))
-        guiControls.windLimitKmh = Math.round(WIND_LIMIT_DEFAULT_RAW * kmhPerRaw);
+        guiControls.windLimitKmh = WIND_LIMIT_DEFAULT_KMH;
       fluidParams_folder.add(guiControls, 'windLimitKmh', 20, Math.round(kmhPerRaw * 0.9), 5)
         .onChange(function() {
           applyWindLimit();
@@ -5265,22 +5429,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(advectionProgram);
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'shearSmoothing'), guiControls.classicWind ? 0.0 : guiControls.shearSmoothing);
       })
-      .name('Dégradé du vent');
+      .name('Anti-ondes du jet');
 
     fluidParams_folder.add(guiControls, 'classicWind')
       .onChange(applyWindLimit) // re-uploads velMax and shearSmoothing for the chosen mode
-      .name('Physique du vent d\'origine');
+      .name('Sans limite ni anti-ondes');
 
-    fluidParams_folder.add(guiControls, 'windCeilingAlt', 1000, guiControls.simHeight, 100)
-      .onChange(function() {
-        const taperStart = guiControls.windCeilingAlt / guiControls.simHeight;
-        gl.useProgram(velocityProgram);
-        gl.uniform1f(gl.getUniformLocation(velocityProgram, 'windTaperStart'), taperStart);
-        gl.useProgram(advectionProgram);
-        gl.uniform1f(gl.getUniformLocation(advectionProgram, 'windTaperStart'), taperStart);
-      })
-      .name('Plafond du vent (m)')
-      .listen();
 
     fluidParams_folder.add(guiControls, 'globalDrying', 0.0, 0.0001, 0.000001)
       .onChange(function() {
@@ -5759,6 +5913,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         soundSystem?.mute();
       }
     });
+
+    advanced_folder.add(guiControls, 'damageVolume', 0, 1, 0.05).name('Volume des dégâts');
 
     advanced_folder.add(guiControls, 'STP', 0, 10, 0.1)
       .listen()
@@ -7472,6 +7628,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const lightingShader = await loadShader('lightingShader.frag');
 
   const lightningLocationShader = await loadShader('lightningLocationShader.frag');
+  const damageProbeShader = await loadShader('damageProbeShader.frag');
 
   const setupShader = await loadShader('setupShader.frag');
 
@@ -7500,6 +7657,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const lightingProgram = createProgram(simVertexShader, lightingShader);
 
   const lightningLocationProgram = createProgram(simVertexShader, lightningLocationShader);
+  const damageProbeProgram = createProgram(simVertexShader, damageProbeShader);
 
   const setupProgram = createProgram(simVertexShader, setupShader);
 
@@ -8078,6 +8236,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lightningDataTexture, 0);
 
+  // 1-row texture: ground state per column, read back twice a second for the storm damage sounds
+  const damageProbeTexture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, damageProbeTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, 1, 0, gl.RGBA, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  const damageProbeFrameBuff = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, damageProbeFrameBuff);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, damageProbeTexture, 0);
+  const damageProbeValues = new Float32Array(sim_res_x * 4);
+  let damageProbePrev = null; // previous damage per column, to detect what just broke
+  let lastDamageProbeTime = 0;
+
   // load images
   imgElement = await loadImage('resources/img/noise_texture.jpg');
 
@@ -8433,6 +8604,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   gl.useProgram(isolateBrightPartsProgram);
   gl.uniform1i(gl.getUniformLocation(isolateBrightPartsProgram, 'hdrTex'), 0);
+
+  gl.useProgram(damageProbeProgram);
+  gl.uniform1i(gl.getUniformLocation(damageProbeProgram, 'waterTex'), 1); // same units as the display programs
+  gl.uniform1i(gl.getUniformLocation(damageProbeProgram, 'wallTex'), 2);
+  gl.uniform2f(gl.getUniformLocation(damageProbeProgram, 'texelSize'), texelSizeX, texelSizeY);
 
   gl.useProgram(lightningLocationProgram);
   gl.uniform1i(gl.getUniformLocation(lightningLocationProgram, 'precipFeedbackTex'), 0);
@@ -8943,6 +9119,28 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     if (airplaneMode) {
       airplane.display();
+    }
+
+    // Storm damage sounds: twice a second, read the ground state of every column and play what just broke
+    if (guiControls.sound && soundSystem && guiControls.stormDamage && guiControls.newDecor && !guiControls.paused && performance.now() - lastDamageProbeTime > 500) {
+      lastDamageProbeTime = performance.now();
+      gl.useProgram(damageProbeProgram);
+      gl.bindVertexArray(fluidVao);
+      gl.viewport(0, 0, sim_res_x, sim_res_y);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, damageProbeFrameBuff);
+      gl.drawBuffers(DRAWBUFFERS_0);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      gl.readPixels(0, 0, sim_res_x, 1, gl.RGBA, gl.FLOAT, damageProbeValues);
+      if (damageProbePrev)
+        soundSystem.soundStormDamage(damageProbeValues, damageProbePrev);
+      else
+        damageProbePrev = new Float32Array(sim_res_x);
+      for (let x = 0; x < sim_res_x; x++) damageProbePrev[x] = Math.abs(damageProbeValues[x * 4]);
     }
 
     // render to canvas

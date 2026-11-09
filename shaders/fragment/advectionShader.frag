@@ -49,10 +49,10 @@ uniform float waterTemperature;
 // indefinitely, since neither this nor the velocity shader's own wind cutoff erase momentum the fluid
 // already has.
 uniform float uWindMultiplier;
-uniform float shearSmoothing; // 0..1, "Dégradé du vent" setting: strength of the Richardson-number mixing below
+uniform float shearSmoothing; // 0..1, "Anti-ondes du jet" setting: strength of the jet-only anti-wave treatment below
 uniform float cellHeightM;    // cell size in meters
 uniform float dtSeconds;      // simulated seconds per iteration
-uniform float windTaperStart; // normalized altitude above which wind fades out toward the top of the map, see windTaper() in common.glsl
+uniform float jetThresholdRaw; // wind speed (cells/iteration) above which air counts as a jet (120 km/h)
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -105,7 +105,15 @@ void main()
 
     base[VX] = bilerp(baseTex, fragCoord - velAtVx).x;
 
-    // Wind gradient ("Dégradé du vent"): Richardson-number turbulent mixing of horizontal momentum, the same idea
+    // Jet anti-waves ("Anti-ondes du jet"). Everywhere else the wind follows the original game's physics.
+    // Only where the wind is jet-strong (around this cell, above jetThresholdRaw) the treatment below applies.
+    float jet = 0.0;
+    if (shearSmoothing > 0.0) {
+      float vMax = max(abs(cellX0Y0.x), max(abs(cellX0Yp.x), abs(cellX0Ym.x)));
+      jet = smoothstep(0.8 * jetThresholdRaw, jetThresholdRaw, vMax) * shearSmoothing;
+    }
+
+    // Richardson-number turbulent mixing of horizontal momentum, the same idea
     // weather models use. A layer is dynamically unstable (Kelvin-Helmholtz billows: the growing bubbles of reversed
     // wind along the edge of a strong jet) when Ri = N^2 / S^2 < 0.25, i.e. when the vertical wind shear S beats the
     // stable stratification N. In the real atmosphere turbulence then mixes the layer before billows can grow; here
@@ -115,7 +123,7 @@ void main()
     // shear also leaves weakly sheared air untouched. Coefficient capped at 0.25 (explicit diffusion is stable up to 0.5); skipped next to walls so it
     // never acts as extra ground friction.
     float billowDamping = 0.0; // > 0 in stably stratified layers that are shear-unstable, used for VY below
-    if (shearSmoothing > 0.0) {
+    if (jet > 0.0) {
       ivec4 wallUp = texture(wallTex, texCoordX0Yp);
       ivec4 wallDown = texture(wallTex, texCoordX0Ym);
       if (wallUp[DISTANCE] != 0 && wallDown[DISTANCE] != 0) {
@@ -127,13 +135,13 @@ void main()
         float unstable = clamp(1.0 - Ri / 0.25, 0.0, 1.0);                      // 0 at Ri >= 0.25, 1 at Ri <= 0
         float enoughShear = smoothstep(0.004, 0.010, S);                        // ~15 -> 35 km/h per km
         float stableAir = smoothstep(0.0, 1e-5, N2); // only stably stratified layers: convection keeps its original dynamics
-        float mixing = 0.25 * unstable * enoughShear * stableAir * shearSmoothing;
+        float mixing = 0.25 * unstable * enoughShear * stableAir * jet;
         base[VX] += mixing * (cellX0Yp.x + cellX0Ym.x - 2.0 * cellX0Y0.x);
 
         // Billows also need vertical motion to roll up. Mixing momentum alone only slowed them down, so in layers
         // that are stably stratified (N^2 > 0) yet shear-unstable, vertical velocity is damped too. Convection lives
         // in unstable air (N^2 < 0) and is excluded, so storms and updrafts are not affected.
-        billowDamping = unstable * enoughShear * stableAir * shearSmoothing;
+        billowDamping = unstable * enoughShear * stableAir * jet;
       }
     }
     base[VY] = bilerp(baseTex, fragCoord - velAtVy).y;
@@ -231,8 +239,7 @@ void main()
       // artifacts) this fix targets. Vertical motion must be left alone for storms to develop naturally.
       base.x *= 1.0 - map_rangeC(soundingForcing, 0.1, 1.0, 0.0, 0.001) * bandWeight;
 
-      // Target wind is the sounding's, faded out toward the top of the map by the wind ceiling
-      float velDiff = base[VX] - getRealWorldSounding_Vel(soundingArrayindex) * windTaper(texCoord.y, windTaperStart);
+      float velDiff = base[VX] - getRealWorldSounding_Vel(soundingArrayindex);
       // Clamped so a single iteration's correction toward the target sounding wind can never exceed a small
       // fixed step, regardless of how large velDiff or bandWeight are (e.g. right after switching station/
       // date/hour, or near the ground where bandWeight is still ramping in) -- large single-step velocity
@@ -257,21 +264,13 @@ void main()
     // horizontal background wind.
     base[VX] -= base[VX] * 0.01 * (1.0 - uWindMultiplier);
 
-    // Wind ceiling + top sponge layer.
-    // The previous sponge braked BOTH components by up to 5% per iteration in the top 20% of the map while the
-    // global wind and the sounding forcing kept pushing full-strength wind just below it. That created a thin,
-    // very strong shear layer, which rolled up (Kelvin-Helmholtz) into growing bubbles of reversed wind that
-    // progressively wrecked the map. Now:
-    //  - horizontal wind relaxes very gently toward calm air above the wind ceiling, with the same smooth
-    //    windTaper() profile the forcing itself uses, so forcing and damping never fight each other;
-    //  - near the lid (top 12%, ramping in smoothly) vertical motion is damped to absorb gravity waves that a
-    //    strong jet radiates upward; otherwise they reflect off the rigid top boundary and come back as
-    //    alternating columns of reversed wind. Horizontal wind there is damped too, but only as far as it is
-    //    above the wind ceiling, so a player who disables the ceiling keeps their wind up to the top.
-    float aboveWindCeiling = 1.0 - windTaper(texCoord.y, windTaperStart);
-    float spongeCoeff = smoothstep(0.88, 1.0, texCoord.y);
-    base[VX] -= base[VX] * aboveWindCeiling * (0.002 + spongeCoeff * 0.004);
-    base[VY] -= base[VY] * spongeCoeff * 0.02;
+    // Ceiling sponge layer (Rayleigh damping), as in the original game: in the top 20% of the domain, ramping in
+    // smoothly, both velocity components are gently damped so waves are absorbed instead of reflecting off the lid.
+    // Jet anti-waves: inside a jet the horizontal wind is not braked there, because braking a jet against the lid
+    // makes a thin shear layer that rolls up into bubbles of reversed wind.
+    float spongeCoeff = smoothstep(0.8, 1.0, texCoord.y);
+    base[VX] -= base[VX] * spongeCoeff * 0.05 * (1.0 - jet);
+    base[VY] -= base[VY] * spongeCoeff * 0.05;
 
     // water[0] -= max(water[1] - 0.1, 0.0) * 0.0001; // Precipitation effect
     // drying !
@@ -393,6 +392,8 @@ void main()
           break;
         case 11:
           wall[TYPE] = WALLTYPE_LAND; // land
+          // brush intensity = tree density: vegetation 50 (grass, no trees) .. 127 (closed forest)
+          wall[VEGETATION] = int(50.0 + 77.0 * sqrt(clamp((abs(userInputValues[BRUSH_INTENSITY]) - 0.005) / 0.045, 0.0, 1.0)));
           setWall = true;
           break;
         case 12:
@@ -410,6 +411,8 @@ void main()
           if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_RUNWAY || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
             wall[TYPE] = WALLTYPE_URBAN;
+            // brush intensity = house density, stored as vegetation 0..75 for urban ground (hamlet .. dense centre)
+            wall[VEGETATION] = int(75.0 * (0.15 + 0.85 * sqrt(clamp((abs(userInputValues[BRUSH_INTENSITY]) - 0.005) / 0.045, 0.0, 1.0))));
           }
           break;
         case 15:                                               // set runway

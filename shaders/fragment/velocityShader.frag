@@ -16,7 +16,6 @@ uniform float dragMultiplier;
 uniform float wind;
 uniform float uWindMultiplier; // 1.0 = normal; ramped 1.0 -> 0.0 over 5s by startWindReset() in app.js to cut the global wind force off smoothly, applied here before this frame's pressure projection (pressureProgram, later in the same iteration) rather than touching the velocity field directly
 uniform float velMax;         // flow speed limit in cells/iteration, from the "Limite de vent" setting (app.js)
-uniform float windTaperStart;  // normalized altitude (0 = ground, 1 = top) above which the wind force fades smoothly to 0 at the top of the map
 
 uniform vec2 texelSize;
 // uniform vec2 resolution;
@@ -71,13 +70,10 @@ void main()
     // dragMultiplier; base[VY] -= base[VY] * base[VY] * base[VY] * base[VY] *
     // base[VY] * dragMultiplier;
 
-    // Faded out with altitude (see windTaper() in common.glsl) so strong winds aloft never run into the rigid top boundary
-    base[VX] += wind * uWindMultiplier * 0.000001 * windTaper(texCoord.y, windTaperStart);
+    base[VX] += wind * uWindMultiplier * 0.000001;
 
-    // Soft speed limiter. Velocities are in cells/iteration and the sim's pressure waves travel 1 cell/iteration,
-    // so the explicit pressure step becomes unstable when the flow gets close to that: strong jet-stream winds
-    // then blow up into a saturated, speckled band. The limit is user-adjustable (it depends on the cell size).
-    // Horizontal component only: vertical motion (storm updrafts and downdrafts) keeps its original dynamics.
+    // Wind limit ("Limite de vent", 150 km/h by default): no effect below 90% of it, then the wind is eased so
+    // it reaches exactly the limit and never more. Horizontal component only: updrafts and downdrafts are free.
     base[VX] = softLimitSpeed(base[VX], velMax);
   }
 }
