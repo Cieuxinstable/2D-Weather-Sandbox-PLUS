@@ -445,20 +445,22 @@ void main()
             if (abs(vk) > abs(gustRaw)) gustRaw = vk;
           }
           float gustKmh = abs(gustRaw) * kmhPerRaw;
-          int packed = int(abs(water[CLOUD]) * 16777216.0 + 0.5);
-          if (packed < 65536) packed = 255; // empty: nothing to animate
-          int peak = packed >> 16, prevPeak = (packed >> 8) & 255, timer = packed & 255;
+          float packed = floor(min(abs(water[CLOUD]), 0.9999999) * 16777216.0 + 0.5); // float math: exact below 2^24
+          float peak = floor(packed / 65536.0);
+          float prevPeak = floor(mod(packed, 65536.0) / 256.0);
+          float timer = mod(packed, 256.0);
+          if (peak < 1.0) timer = 255.0; // empty: nothing to animate
           float dir = water[CLOUD] < 0.0 ? -1.0 : 1.0;
-          if (timer < 255 && int(iterNum) % 4 == 0)
-            timer++;
-          if (timer == 255 && gustKmh > 55.0 && gustKmh > float(peak) + 3.0) {
+          if (timer < 255.0 && mod(iterNum, 4.0) < 1.0)
+            timer += 1.0;
+          if (timer >= 255.0 && gustKmh > 55.0 && gustKmh > peak + 3.0) {
             prevPeak = peak;
-            peak = min(int(gustKmh), 255);
-            timer = 0;
+            peak = min(floor(gustKmh), 255.0);
+            timer = 0.0;
             dir = gustRaw < 0.0 ? -1.0 : 1.0;
           }
-          if (peak > 0)
-            water[CLOUD] = dir * float(peak * 65536 + prevPeak * 256 + timer) / 16777216.0;
+          if (peak >= 1.0)
+            water[CLOUD] = dir * (peak * 65536.0 + prevPeak * 256.0 + timer) / 16777216.0;
         }
 
 

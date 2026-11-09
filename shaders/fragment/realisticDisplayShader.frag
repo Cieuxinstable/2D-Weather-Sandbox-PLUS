@@ -319,10 +319,10 @@ Column sampleColumn(float colX, float row)
   vec4 wa = texture(waterTex, tcS);
   c.type = ws[TYPE];
   c.vegetation = float(ws[VEGETATION]);
-  int packed = int(abs(wa[CLOUD]) * 16777216.0 + 0.5); // see the boundary shader
-  c.gust = float(packed >> 16);
-  c.prevGust = float((packed >> 8) & 255);
-  c.anim = float(packed & 255) / 255.0;
+  float packed = floor(min(abs(wa[CLOUD]), 0.9999999) * 16777216.0 + 0.5); // see the boundary shader
+  c.gust = floor(packed / 65536.0);
+  c.prevGust = floor(mod(packed, 65536.0) / 256.0);
+  c.anim = c.gust < 1.0 ? 1.0 : mod(packed, 256.0) / 255.0;
   c.fallDir = wa[CLOUD] < 0.0 ? -1.0 : 1.0;
   c.snow = wa[SNOW];
   c.soilMoisture = wa[SOIL_MOISTURE];
