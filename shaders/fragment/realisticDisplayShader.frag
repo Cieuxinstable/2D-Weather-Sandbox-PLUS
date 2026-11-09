@@ -296,8 +296,10 @@ struct Column {
   float groundTop; // absolute y (cells) of the ground surface
   int type;
   float vegetation;
-  float gust;      // strongest sustained gust felt here, km/h (0 = none above 50 km/h)
-  float fallDir;   // +1 / -1: direction of that gust
+  float gust;      // strongest gust felt here (peak), km/h
+  float prevGust;  // peak before the last one: what broke between prevGust and gust is being animated
+  float anim;      // 0..1 progress of that animation (1 = finished)
+  float fallDir;   // +1 / -1: direction of the peak gust
   float snow;
   float soilMoisture;
 };
@@ -317,8 +319,10 @@ Column sampleColumn(float colX, float row)
   vec4 wa = texture(waterTex, tcS);
   c.type = ws[TYPE];
   c.vegetation = float(ws[VEGETATION]);
-  float d = clamp(abs(wa[CLOUD]), 0.0, 1.0);
-  c.gust = d > 0.0 ? 50.0 + 150.0 * d : 0.0;
+  float packed = floor(min(abs(wa[CLOUD]), 0.9999999) * 16777216.0 + 0.5); // see the boundary shader
+  c.gust = floor(packed / 65536.0);
+  c.prevGust = floor(mod(packed, 65536.0) / 256.0);
+  c.anim = c.gust < 1.0 ? 1.0 : mod(packed, 256.0) / 255.0;
   c.fallDir = wa[CLOUD] < 0.0 ? -1.0 : 1.0;
   c.snow = wa[SNOW];
   c.soilMoisture = wa[SOIL_MOISTURE];
@@ -435,6 +439,11 @@ vec4 drawTree(float dx, float v, float h, int sp, float bend, float resist, floa
   float A = cA <= -1.0 ? 1.62 : cA >= 1.0 ? 0.2 : min(1.62, acos(cA)); // stops when the crown rests on the ground
   float drop = uproot ? 0.0 : max(0.0, sp == 1 ? pivot - h * 0.12 : pivot + arm * cos(A) - crR);
   float dir = col.fallDir;
+  // falling animation: it broke during the last peak if its threshold is above the previous one
+  float prog = col.prevGust >= thr.z ? 1.0 : col.anim;
+  float fallP = min(1.0, prog / 0.75);
+  A *= fallP * fallP;                       // accelerates as it goes over
+  drop *= smoothstep(0.75, 1.0, prog);      // then the broken top slides off the stump
 
   // standing stump (snapped trees), splintered at the top
   if (!uproot) {
@@ -458,15 +467,16 @@ vec4 drawTree(float dx, float v, float h, int sp, float bend, float resist, floa
 vec4 drawHouse(float dx, float v, float kind, float gust, float resist, float seed, float pxM, Column col, bool night, out bool lit)
 {
   lit = false;
+  bool town = kind < 0.0; // narrow town house (2-3 floors), dense centres
   bool longere = kind > 0.55 && kind <= 0.72;
   bool chalet = kind > 0.72 && kind <= 0.88;
   bool block = kind > 0.88;
-  float w = (block ? 14.0 : longere ? 18.0 : chalet ? 10.0 : 11.0) * decorScale;
-  float wallH = (block ? 10.0 : longere ? 4.5 : chalet ? 4.0 : 5.5) * decorScale;
-  float roofH = (block ? 0.8 : chalet ? 4.5 : 4.0) * decorScale;
+  float w = (town ? 8.0 : block ? 14.0 : longere ? 18.0 : chalet ? 10.0 : 11.0) * decorScale;
+  float wallH = (town ? 6.0 + 3.0 * step(0.5, seed) : block ? 10.0 : longere ? 4.5 : chalet ? 4.0 : 5.5) * decorScale;
+  float roofH = (town ? 3.2 : block ? 0.8 : chalet ? 4.5 : 4.0) * decorScale;
   float halfW = w * 0.5;
 
-  vec3 wallCol = lin(block ? vec3(0.80, 0.78, 0.74) : longere ? vec3(0.66, 0.60, 0.50) : chalet ? vec3(0.60, 0.42, 0.26) : vec3(0.88, 0.82, 0.70));
+  vec3 wallCol = lin(town ? mix(vec3(0.86, 0.80, 0.68), vec3(0.74, 0.62, 0.52), fract(seed * 7.7)) : block ? vec3(0.80, 0.78, 0.74) : longere ? vec3(0.66, 0.60, 0.50) : chalet ? vec3(0.60, 0.42, 0.26) : vec3(0.88, 0.82, 0.70));
   vec3 roofCol = lin(block ? vec3(0.40, 0.40, 0.42) : chalet ? vec3(0.24, 0.23, 0.22) : (seed > 0.4 ? vec3(0.58, 0.25, 0.17) : vec3(0.30, 0.32, 0.35)));
   float snowCover = clamp(col.snow / fullWhiteSnowHeight, 0.0, 1.0);
 
@@ -503,12 +513,62 @@ vec4 drawHouse(float dx, float v, float kind, float gust, float resist, float se
       return vec4(roofCol, 1.0);
     }
   }
-  if (!block && !longere && !chalet && !roofGone && rv > roofH * 0.3 && rv < roofH * 0.9 && abs(dx - halfW * 0.45) < 0.45 * decorScale) return vec4(lin(vec3(0.45, 0.32, 0.25)), 1.0); // chimney
+  if (!block && !longere && !chalet && !town && !roofGone && rv > roofH * 0.3 && rv < roofH * 0.9 && abs(dx - halfW * 0.45) < 0.45 * decorScale) return vec4(lin(vec3(0.45, 0.32, 0.25)), 1.0); // chimney
   return vec4(0.0);
 }
 
 // Trees and houses covering this pixel. Returns alpha 0 when there is nothing here.
 // Ground columns (x-2 .. x+2) are read lazily: only when an object standing on them could reach this pixel.
+// Pieces thrown off by a gust (leaves, branches, tiles): count pieces from an object at height srcY, spread over
+// srcW meters, flying downwind (dir) over about range meters, up then down to the ground, during anim 0..1.
+vec4 debrisBurst(float dx, float v, float anim, float dir, float srcY, float srcW, float range, float size, vec3 col1, vec3 col2, float seed, float pxM, int count)
+{
+  if (anim >= 1.0) return vec4(0.0);
+  for (int i = 0; i < 14; i++) {
+    if (i >= count) break;
+    vec4 hk = hash4(seed * 911.0 + float(i) * 13.0);
+    float t = clamp(anim * (1.15 + hk.x * 0.4) - hk.y * 0.15, 0.0, 1.0); // staggered start
+    if (t <= 0.0) continue;
+    float y0 = srcY + (hk.w - 0.5) * srcW * 0.4;
+    float px = (hk.z - 0.5) * srcW + dir * t * range * (0.6 + 0.6 * hk.x);
+    float py = max(y0 + t * range * 0.25 * hk.y - t * t * (y0 + range * 0.25 * hk.y), size * 0.2);
+    float sz = max(size * (0.7 + 0.6 * hk.w), pxM * 0.9);
+    vec2 d = vec2(dx - px, v - py);
+    float a = t * 12.0 * (hk.z - 0.5);
+    vec2 r = vec2(cos(a) * d.x + sin(a) * d.y, -sin(a) * d.x + cos(a) * d.y);
+    if (abs(r.x) < sz && abs(r.y) < sz * 0.45) return vec4(mix(col1, col2, step(0.6, hk.y)), 1.0);
+  }
+  return vec4(0.0);
+}
+
+// Leaves (and roof tiles over towns) carried by a strong wind, drawn as a moving field of small pieces.
+vec4 flyingDebris(float xm, float v, float windKmh, float amount, bool tiles, float topM, float pxM)
+{
+  float w = abs(windKmh);
+  float minW = tiles ? 110.0 : 45.0;
+  if (w < minW || amount <= 0.0) return vec4(0.0);
+  amount *= clamp((w - minW) / 60.0, 0.0, 1.0) * (1.0 - smoothstep(topM * 0.7, topM * 1.4, v));
+  if (amount <= 0.0) return vec4(0.0);
+  float G = 3.0 * decorScale;                                   // one candidate piece per G x G meters
+  float phase = iterNum * 0.05 * decorScale * sign(windKmh);    // drift downwind
+  vec2 P = vec2(xm - phase, v);
+  vec2 cell = floor(P / G);
+  vec4 hk = hash4(cell.x * 0.37 + cell.y * 57.13);
+  if (hk.x > amount * (tiles ? 0.25 : 0.5)) return vec4(0.0);
+  vec2 ctr = (cell + 0.2 + 0.6 * hk.yz) * G;
+  ctr.y += sin(iterNum * 0.02 + hk.w * 6.3) * G * 0.2;          // flutter up and down
+  vec2 d = P - ctr;
+  float a = iterNum * 0.05 * (hk.w - 0.5);
+  vec2 r = vec2(cos(a) * d.x + sin(a) * d.y, -sin(a) * d.x + cos(a) * d.y);
+  float sz = max((tiles ? 0.6 : 0.5) * decorScale, pxM * 1.1);
+  if (abs(r.x) < sz && abs(r.y) < sz * 0.45) {
+    vec3 c = tiles ? lin(mix(vec3(0.55, 0.25, 0.17), vec3(0.32, 0.30, 0.30), step(0.5, hk.y)))
+                   : lin(mix(vec3(0.30, 0.46, 0.16), vec3(0.62, 0.62, 0.22), hk.y));
+    return vec4(c, 1.0);
+  }
+  return vec4(0.0);
+}
+
 Column decorCols[5];
 bool decorHave[5];
 
@@ -532,34 +592,72 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
   float colX = floor(frag.x);
   for (int k = 0; k < 5; k++) decorHave[k] = false;
 
-  // houses first (in front of trees). Slots every 20 m; the Urban brush intensity (stored as vegetation 0..75)
-  // decides how many are built: hamlet .. dense centre. Sizes never change.
-  float houseSp = 20.0 * decorScale / cellHeight;                   // slot spacing in cells
+  float windKmh = base.x * kmhPerRaw;
+  Column cHere = decorColumn(2, colX, row);
+  float vHere = cHere.valid ? (frag.y - cHere.groundTop) * cellHeight : 0.0;
+
+  // leaves (and roof tiles over towns) carried by a strong wind, in front of everything
+  if (cHere.valid) {
+    bool townHere = cHere.type == WALLTYPE_URBAN;
+    float amount = townHere ? clamp(cHere.vegetation / 75.0, 0.0, 1.0) * step(100.0, cHere.gust) + 0.5 * treeDensity(cHere) : treeDensity(cHere);
+    vec4 fd = flyingDebris(frag.x * cellHeight, vHere, windKmh, amount, townHere && cHere.gust >= 100.0, 30.0 * decorScale, pxM);
+    if (fd.a > 0.0) return fd;
+  }
+
+  // houses first (in front of trees). A front row of slots every 14 m and, in towns denser than a hamlet, a darker
+  // back row of taller buildings in between. The Urban brush intensity (stored as vegetation 0..75) decides how
+  // many are built: hamlet .. dense centre. Sizes never change.
+  float houseSp = 14.0 * decorScale / cellHeight;                   // slot spacing in cells
   float houseReach = min(10.0 * decorScale / cellHeight, 2.0);      // max half width of a house, in cells
-  float hs0 = floor((frag.x - houseReach) / houseSp - 0.5), hs1 = floor((frag.x + houseReach) / houseSp + 0.5);
-  for (int i = 0; i < 12; i++) {
-    float s = hs0 + float(i);
-    if (s > hs1) break;
-    float xc = (s + 0.5 + (slotHash(s, 1.0) - 0.5) * 0.15) * houseSp;
-    int ci = int(floor(xc) - colX) + 2;
-    if (ci < 0 || ci > 4) continue;
-    Column c = decorColumn(ci, colX, row);
-    if (!c.valid || c.type != WALLTYPE_URBAN) continue;
-    float houseDensity = clamp(c.vegetation / 75.0, 0.0, 1.0);
-    if (slotHash(s, 2.0) > 0.12 + 0.88 * houseDensity) continue;
-    vec4 hc = drawHouse((frag.x - xc) * cellHeight, (frag.y - c.groundTop) * cellHeight, slotHash(s, 3.0), c.gust, 0.9 + 0.2 * slotHash(s, 4.0), slotHash(s, 5.0), pxM, c, night, lit);
-    if (hc.a > 0.0) return hc;
+  int housePasses = cHere.valid && cHere.type == WALLTYPE_URBAN && cHere.vegetation > 26.0 ? 2 : 1;
+  for (int pass = 0; pass < 2; pass++) {
+    if (pass >= housePasses) break;
+    float off = pass == 0 ? 0.0 : 0.5;
+    float hs0 = floor((frag.x - houseReach) / houseSp - off - 0.5), hs1 = floor((frag.x + houseReach) / houseSp - off + 0.5);
+    for (int i = 0; i < 12; i++) {
+      float s = hs0 + float(i);
+      if (s > hs1) break;
+      float sid = s + off * 1000.0;
+      vec4 ha = hash4(sid * 2.71 + 5.0); // x: jitter, y: built?, z: kind, w: resistance
+      float xc = (s + off + 0.5 + (ha.x - 0.5) * 0.15) * houseSp;
+      int ci = int(floor(xc) - colX) + 2;
+      if (ci < 0 || ci > 4) continue;
+      Column c = decorColumn(ci, colX, row);
+      if (!c.valid || c.type != WALLTYPE_URBAN) continue;
+      float d = clamp(c.vegetation / 75.0, 0.0, 1.0);
+      float fill = pass == 0 ? 0.15 + 0.85 * d : clamp((d - 0.35) * 1.6, 0.0, 1.0);
+      if (ha.y > fill) continue;
+      // dense centres: mostly narrow town houses; back row: town houses and blocks
+      float kind = ha.z;
+      if (pass == 1) kind = ha.z < 0.55 ? -1.0 : 0.95;
+      else if (ha.z < d * 0.75) kind = -1.0;
+      float seedH = slotHash(sid, 5.0);
+      float resist = 0.9 + 0.2 * ha.w;
+      float dx = (frag.x - xc) * cellHeight, v = (frag.y - c.groundTop) * cellHeight;
+      // tiles and pieces of roof thrown off by the last peak gust
+      if (c.anim < 1.0 && c.gust > c.prevGust) {
+        bool tilesOff = (c.prevGust < 100.0 * resist && c.gust >= 100.0 * resist) || (c.prevGust < 140.0 * resist && c.gust >= 140.0 * resist);
+        bool roofOff = c.prevGust < 185.0 * resist && c.gust >= 185.0 * resist;
+        if (tilesOff || roofOff) {
+          vec3 rc = lin(seedH > 0.4 ? vec3(0.58, 0.25, 0.17) : vec3(0.30, 0.32, 0.35));
+          vec4 bc = debrisBurst(dx, v, c.anim, c.fallDir, 7.0 * decorScale, 10.0 * decorScale, 30.0 * decorScale, 0.6 * decorScale, rc, lin(vec3(0.42, 0.30, 0.20)), sid, pxM, roofOff ? 14 : 8);
+          if (bc.a > 0.0) return bc;
+        }
+      }
+      vec4 hc = drawHouse(dx, v, kind, c.gust, resist, seedH, pxM, c, night, lit);
+      if (hc.a > 0.0) {
+        if (pass == 1 && !lit) hc.rgb *= 0.78;
+        return hc;
+      }
+    }
   }
 
   // trees: a front row of slots every 6 m and, in dense woods, a darker back row in between. The Land brush
   // intensity (vegetation 50..127) sets the share of filled slots: ~1 tree / 30 m up to a closed canopy.
-  float windKmh = base.x * kmhPerRaw;
   float treeSp = 6.0 * decorScale / cellHeight;
   float treeReach = min(16.0 * decorScale / cellHeight, 2.0); // max crown radius + bend, in cells
   float flutterT = iterNum * 0.03;
-  Column cHere = decorColumn(2, colX, row);
   int passes = cHere.valid && treeDensity(cHere) > 0.45 ? 2 : 1; // the back row only exists in dense woods
-  float vHere = cHere.valid ? (frag.y - cHere.groundTop) * cellHeight : 0.0;
   for (int pass = 0; pass < 2; pass++) {
     if (pass >= passes) break;
     float off = pass == 0 ? 0.0 : 0.5;
@@ -582,16 +680,32 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
       float h = mix(hr.x, hr.y, ha.w) * decorScale;
       float dx = (frag.x - xc) * cellHeight;
       float v = (frag.y - c.groundTop) * cellHeight;
+      vec4 hb = hash4(sid * 5.31 + 77.0); // x: resistance, y: seed
+      float resist = 0.88 + 0.24 * hb.x;
+      // leaves and branches thrown off by the last peak gust
+      if (c.anim < 1.0 && c.gust > c.prevGust) {
+        vec3 thr = speciesThresholds(sp) * resist;
+        bool leavesOff = c.prevGust < thr.x && c.gust >= thr.x;
+        bool branchOff = c.prevGust < thr.y && c.gust >= thr.y;
+        bool felled = c.prevGust < thr.z && c.gust >= thr.z;
+        if (leavesOff || branchOff || felled) {
+          vec3 lc = lin(speciesLeaf(sp));
+          vec3 c2 = branchOff ? (sp == 3 ? lin(vec3(0.85, 0.83, 0.78)) : lin(vec3(0.36, 0.27, 0.19))) : lc * 1.3;
+          vec4 bc = debrisBurst(dx, v, c.anim, c.fallDir, h * 0.65, h * 0.5, h * 1.1, 0.5 * decorScale, lc, c2, hb.y * 97.0 + sid, pxM, felled ? 14 : 9);
+          if (bc.a > 0.0) { isTree = true; return bc; }
+        }
+      }
       if (v > h * 1.05 || abs(dx) > h * 1.05) continue; // cheap reject before shaping (fallen trees reach ~h)
       float stiff = sp == 1 ? 0.8 : sp == 2 ? 1.3 : 1.0; // pines stiffer, poplars more flexible
-      float flutter = sin(flutterT + s * 1.7) * 0.03 * min(abs(windKmh) / 40.0, 1.0);
-      float bend = clamp(sign(windKmh) * pow(abs(windKmh) / 130.0, 2.0) * 0.3 * stiff + flutter, -0.35, 0.35);
+      float aw = min(abs(windKmh) / 30.0, 1.0);
+      float flutter = sin(flutterT + s * 1.7) * 0.05 * aw;              // quick shiver of the leaves
+      float gustSway = 0.8 + 0.4 * sin(flutterT * 0.35 + s * 0.9);         // slower sway with the gusts
+      float bend = clamp(windKmh / 100.0 * 0.32 * stiff * gustSway + flutter, -0.6, 0.6);
       if (c.gust < 110.0) { // certainly standing: reject points outside the bent crown's width
         float halfW = sp == 1 ? 0.23 * h : speciesCrown(sp).x * h * 1.3;
         if (abs(dx - stemLean(min(v, h), h, bend)) > halfW + abs(bend) * 0.4 * h + pxM) continue; // crown is bent as a block
       }
-      vec4 hb = hash4(sid * 5.31 + 77.0); // x: resistance, y: seed
-      vec4 tc = drawTree(dx, v, h, sp, bend, 0.88 + 0.24 * hb.x, hb.y, pxM, pass == 0 ? 1.0 : 0.72, c);
+      vec4 tc = drawTree(dx, v, h, sp, bend, resist, hb.y, pxM, pass == 0 ? 1.0 : 0.72, c);
       if (tc.a > 0.0) { isTree = true; return tc; }
     }
   }
