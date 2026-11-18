@@ -264,9 +264,9 @@ vec4 getAirColor(vec2 fragCoordIn)
     if (sc > 1e-5) {
       float y = clamp(texCoord.y, 0.0, 1.0);
       vec3 altColor = mix(vec3(0.65, 0.38, 0.82), mix(vec3(1.00, 0.50, 0.60), mix(vec3(1.00, 0.52, 0.22), vec3(1.00, 0.88, 0.48), smoothstep(0.45, 0.70, y)), smoothstep(0.20, 0.45, y)), smoothstep(0.05, 0.20, y));
-      onLight += altColor * sc * cloudOpacity * lightIntensity * y * 6.0;
+      onLight += altColor * sc * cloudOpacity * lightIntensity * y * 2.2; // toned down from the EXTRA fork (it blew clouds out to white here)
       float altFactor = clamp((y - 0.50) / 0.50, 0.0, 1.0);
-      onLight += vec3(sc * cloudOpacity * altFactor * altFactor * lightIntensity * 8.0);
+      onLight += vec3(sc * cloudOpacity * altFactor * altFactor * lightIntensity * 1.5);
     }
   }
 
@@ -747,7 +747,7 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
       float ph = s * 1.7 + hb.y * 6.3;
       float flutter = (sin(realTime * 9.0 + ph) * 0.6 + sin(realTime * 14.0 + ph * 2.1) * 0.4) * 0.05 * aw; // leaves shivering
       float gustSway = 1.0 + 0.32 * sin(realTime * 1.8 + ph) + 0.16 * sin(realTime * 3.3 + ph * 1.3);        // trunk swaying
-      float bend = clamp(w / 55.0 * 0.36 * stiff * gustSway + flutter, -0.8, 0.8);
+      float bend = clamp(w / 55.0 * 0.36 * stiff * gustSway + flutter, -0.65, 0.65);
       if (c.gust < 110.0) { // certainly standing: reject points outside the bent crown's width
         float halfW = sp == 1 ? 0.23 * h : speciesCrown(sp).x * h * 1.3;
         if (abs(dx - stemLean(min(v, h), h, bend)) > halfW + (abs(bend) * 0.4 + 0.1) * h + pxM) continue; // crown is bent as a block
