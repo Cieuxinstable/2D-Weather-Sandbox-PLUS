@@ -1030,6 +1030,10 @@ const guiControls_default = {
   windLimitKmh : 150,
   shearSmoothing : 1.0,
   classicWind : false,
+  saturation : 1.15,                // colour grading (from the EXTRA fork): post-processing saturation
+  contrast : 1.1,                   // and contrast
+  greenHueStrength : 0.65,          // green / teal cast inside intense rain and hail cores, in the shade, by day
+  sunsetCloudColors : true,         // purple -> pink -> orange -> yellow on cloud faces at sunrise / sunset, by altitude
   newDecor : true,                  // procedural trees (bending, storm damage) and small houses instead of the texture strips
   decorScale : 2.5,                 // visual size multiplier of trees and houses (real size is barely a few pixels at usual zooms)
   stormDamage : true,               // strong surface winds damage trees and roofs (persistent until the ground is repainted)
@@ -5155,6 +5159,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.useProgram(postProcessingProgram);
     gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), guiControls.exposure);
     applyDecorSettings();
+    applyColorSettings();
+  }
+
+  // Colour grading taken from the EXTRA fork (Weatherin2D/2D-Weather-Sandbox-Extra, GPL-3.0): saturation and contrast
+  // in post-processing, storm-core green cast and sunrise/sunset cloud colours in the realistic view. All cheap.
+  function applyColorSettings()
+  {
+    gl.useProgram(postProcessingProgram);
+    gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'saturation'), guiControls.saturation);
+    gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'contrast'), guiControls.contrast);
+    gl.useProgram(realisticDisplayProgram);
+    gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
+    gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'sunsetCloudColors'), guiControls.sunsetCloudColors ? 1.0 : 0.0);
   }
 
   // Trees, houses and storm damage: display options for the realistic view plus the damage switch in the boundary shader.
@@ -5633,6 +5650,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), guiControls.exposure);
       })
       .name('Exposition');
+    display_folder.add(guiControls, 'saturation', 0.5, 2.0, 0.01).onChange(applyColorSettings).name('Saturation');
+    display_folder.add(guiControls, 'contrast', 0.7, 1.6, 0.01).onChange(applyColorSettings).name('Contraste');
+    display_folder.add(guiControls, 'greenHueStrength', 0.0, 1.5, 0.05).onChange(applyColorSettings).name('Teinte verte des orages');
+    display_folder.add(guiControls, 'sunsetCloudColors').onChange(applyColorSettings).name('Couleurs du soleil bas sur les nuages');
 
     display_folder.add(guiControls, 'camSpeed', 0.001, 0.050, 0.001).name('Vitesse de la caméra');
 
@@ -5783,6 +5804,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     SETUP_MODE = false;
     gl.useProgram(postProcessingProgram);
     gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), guiControls.exposure);
+    applyColorSettings();
     datGui.show(); // unhide
 
     clockEl = document.createElement('div');
@@ -8488,6 +8510,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   var uniformLocation_realisticDisplayProgram_cursor = gl.getUniformLocation(realisticDisplayProgram, 'cursor');
   var uniformLocation_realisticDisplayProgram_Xmult = gl.getUniformLocation(realisticDisplayProgram, 'Xmult');
   var uniformLocation_realisticDisplayProgram_iterNum = gl.getUniformLocation(realisticDisplayProgram, 'iterNum');
+  var uniformLocation_realisticDisplayProgram_realTime = gl.getUniformLocation(realisticDisplayProgram, 'realTime');
   var uniformLocation_realisticDisplayProgram_displayVectorField = gl.getUniformLocation(realisticDisplayProgram, 'displayVectorField');
   var uniformLocation_precipDisplayProgram_aspectRatios = gl.getUniformLocation(precipDisplayProgram, 'aspectRatios');
   var uniformLocation_precipDisplayProgram_view = gl.getUniformLocation(precipDisplayProgram, 'view');
@@ -9056,6 +9079,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.uniform4f(uniformLocation_realisticDisplayProgram_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
       gl.uniform1f(uniformLocation_realisticDisplayProgram_Xmult, horizontalDisplayMult);
       gl.uniform1f(uniformLocation_realisticDisplayProgram_iterNum, iterNum);
+      gl.uniform1f(uniformLocation_realisticDisplayProgram_realTime, (performance.now() / 1000) % 3600); // smooth tree sway, independent of the sim speed
 
       // Don't display vectors when zoomed out because you would just see noise
       if (cam.curZoom / sim_res_x > 0.003) {
