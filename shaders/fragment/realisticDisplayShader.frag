@@ -53,6 +53,9 @@ uniform float iterNum;
 
 uniform float newDecor;   // 1 = procedural trees and houses (with storm damage), 0 = original texture strips
 uniform float decorScale; // visual size multiplier of trees and houses (1 = real size)
+uniform float realTime;          // seconds, for animations that must not depend on the sim speed (tree sway)
+uniform float greenHueStrength;  // EXTRA fork colour grading: green / teal cast in intense storm cores
+uniform float sunsetCloudColors; // EXTRA fork colour grading: low-sun colours on cloud faces by altitude
 uniform float kmhPerRaw;  // km/h per raw velocity unit, for wind bending
 
 out vec4 fragmentColor;
@@ -229,6 +232,22 @@ vec4 getAirColor(vec2 fragCoordIn)
 
   vec3 cloudCol = vec3(1.0 / (cloudwater * 0.005 + 1.0)); // 0.10 white to black
 
+  // Colour grading from the EXTRA fork (Weatherin2D/2D-Weather-Sandbox-Extra, GPL-3.0), simplified to stay cheap:
+  // green / teal cast inside intense rain and hail cores, in the shade, by day (hail: greener, rain: more teal).
+  if (greenHueStrength > 0.001 && water[PRECIPITATION] > 0.25) {
+    float dayGate = 1.0 - smoothstep(80.0 * deg2rad, 92.0 * deg2rad, abs(sunAngle));
+    float inShadow = 1.0 - smoothstep(0.10, 0.85, lightIntensity);
+    float amt = smoothstep(0.3, 1.2, water[PRECIPITATION]) * inShadow * dayGate * min(greenHueStrength, 1.5);
+    if (amt > 0.001) {
+      float hail = 1.0 - smoothstep(CtoK(-5.0), CtoK(5.0), realTemp);
+      vec3 coreHue = mix(vec3(0.28, 0.86, 0.88), vec3(0.22, 0.95, 0.52), 0.15 + 0.7 * hail);
+      const vec3 lumW = vec3(0.2126, 0.7152, 0.0722);
+      vec3 hk = coreHue * (max(dot(cloudCol, lumW), 1e-4) / dot(coreHue, lumW)); // same brightness, new hue
+      vec3 tinted = mix(cloudCol * mix(vec3(1.0), hk, 0.55), hk, 0.38);
+      cloudCol = mix(cloudCol, tinted, smoothstep(0.02, 0.5, amt) * 0.52);
+    }
+  }
+
   float cloudDensity = max(cloudwater * 13.6, 0.0);
 
   float totalDensity = cloudDensity + water[PRECIPITATION] * 0.8; // visualize precipitation
@@ -236,6 +255,20 @@ vec4 getAirColor(vec2 fragCoordIn)
 
   // float cloudOpacity = clamp(cloudwater * 4.0, 0.0, 1.0);
   float cloudOpacity = clamp(1.0 - (1.0 / (1. + totalDensity)), 0.0, 1.0);
+
+  // EXTRA fork colour grading: with a low sun, lit cloud faces turn purple -> pink -> orange -> yellow with altitude
+  if (sunsetCloudColors > 0.5 && cloudOpacity > 1e-4) {
+    float absSun = abs(sunAngle);
+    float sc = clamp(map_range(absSun, 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.)
+             * (1.0 - clamp(map_range(absSun, 88. * deg2rad, 96. * deg2rad, 0., 1.), 0., 1.)); // gone in deep night
+    if (sc > 1e-5) {
+      float y = clamp(texCoord.y, 0.0, 1.0);
+      vec3 altColor = mix(vec3(0.65, 0.38, 0.82), mix(vec3(1.00, 0.50, 0.60), mix(vec3(1.00, 0.52, 0.22), vec3(1.00, 0.88, 0.48), smoothstep(0.45, 0.70, y)), smoothstep(0.20, 0.45, y)), smoothstep(0.05, 0.20, y));
+      onLight += altColor * sc * cloudOpacity * lightIntensity * y * 2.2; // toned down from the EXTRA fork (it blew clouds out to white here)
+      float altFactor = clamp((y - 0.50) / 0.50, 0.0, 1.0);
+      onLight += vec3(sc * cloudOpacity * altFactor * altFactor * lightIntensity * 1.5);
+    }
+  }
 
   const vec3 smokeThinCol = vec3(0.8, 0.51, 0.26);
   const vec3 smokeThickCol = vec3(0., 0., 0.);
@@ -300,6 +333,7 @@ struct Column {
   float prevGust;  // peak before the last one: what broke between prevGust and gust is being animated
   float anim;      // 0..1 progress of that animation (1 = finished)
   float fallDir;   // +1 / -1: direction of the peak gust
+  float windKmh;   // current wind just above the ground there, km/h (bends the trees as one piece)
   float snow;
   float soilMoisture;
 };
@@ -324,6 +358,7 @@ Column sampleColumn(float colX, float row)
   c.prevGust = floor(mod(packed, 65536.0) / 256.0);
   c.anim = c.gust < 1.0 ? 1.0 : mod(packed, 256.0) / 255.0;
   c.fallDir = wa[CLOUD] < 0.0 ? -1.0 : 1.0;
+  c.windKmh = texture(baseTex, vec2(colX + 0.5, c.groundTop + 1.5) * texelSize).x * kmhPerRaw;
   c.snow = wa[SNOW];
   c.soilMoisture = wa[SOIL_MOISTURE];
   return c;
@@ -426,8 +461,11 @@ vec4 drawTree(float dx, float v, float h, int sp, float bend, float resist, floa
   float g = col.gust;
   float leafLoss = g > thr.y ? 0.55 : g > thr.x ? 0.28 : 0.0;
   bool limbs = g > thr.y;
-  if (g <= thr.z)
+  if (g <= thr.z) {
+    // between broken branches and failure the tree is left leaning (roots loosened) toward where the gust went
+    bend += col.fallDir * 0.22 * clamp((g - thr.y) / (thr.z - thr.y), 0.0, 1.0);
     return treeShape(dx, v, h, sp, bend, leafLoss, limbs, seed, pxM, shadeMul, col, 0.0, 1e9);
+  }
 
   // felled: oak, pine and poplar snap (pine near the top), birch is uprooted
   bool uproot = sp == 3;
@@ -448,8 +486,9 @@ vec4 drawTree(float dx, float v, float h, int sp, float bend, float resist, floa
   // standing stump (snapped trees), splintered at the top
   if (!uproot) {
     float tw = max(h * (sp == 0 ? 0.055 : 0.04) * 1.15, pxM * 0.7);
-    if (v < pivot && abs(dx) < tw * 0.5) {
-      vec3 c = v > pivot - max(0.4, pxM) ? lin(vec3(0.85, 0.75, 0.55)) : (sp == 2 ? lin(vec3(0.54, 0.50, 0.44)) : lin(vec3(0.36, 0.27, 0.19)));
+    float jag = pivot - 0.9 * decorScale * abs(fract(dx / (0.35 * decorScale) + seed) - 0.5) * 2.0; // splintered break
+    if (v < jag && abs(dx) < tw * 0.5) {
+      vec3 c = v > jag - max(0.5 * decorScale, pxM) ? lin(vec3(0.85, 0.75, 0.55)) : (sp == 2 ? lin(vec3(0.54, 0.50, 0.44)) : lin(vec3(0.36, 0.27, 0.19)));
       return vec4(c * shadeMul, 1.0);
     }
   } else if (v < h * 0.07 && length(vec2(dx / (h * 0.16), v / (h * 0.07))) < 1.0) {
@@ -484,7 +523,10 @@ vec4 drawHouse(float dx, float v, float kind, float gust, float resist, float se
   float holes = gust > 140.0 * resist ? 0.55 : gust > 100.0 * resist ? 0.22 : 0.0;
   bool roofGone = gust > 185.0 * resist;
 
-  if (abs(dx) < halfW && v < wallH) {
+  // very violent gusts break the top of the walls of small houses
+  float wallTop = wallH;
+  if (!block && gust > 220.0 * resist) wallTop = wallH * (0.75 + 0.2 * abs(fract(dx / (1.6 * decorScale) + seed) - 0.5) * 2.0);
+  if (abs(dx) < halfW && v < wallTop) {
     // windows on a 3 m grid, door in the middle of houses
     float gx = fract((dx + halfW) / (3.0 * decorScale));
     float gy = fract(v / (3.0 * decorScale));
@@ -492,12 +534,15 @@ vec4 drawHouse(float dx, float v, float kind, float gust, float resist, float se
     if (door) return vec4(lin(vec3(0.30, 0.20, 0.13)), 1.0);
     if (gx > 0.35 && gx < 0.72 && gy > 0.35 && gy < 0.78 && abs(dx) < halfW - 1.0 * decorScale) {
       float wid = floor((dx + halfW) / (3.0 * decorScale)) + floor(v / (3.0 * decorScale)) * 17.0;
+      if (gust > 140.0 * resist && slotHash(seed * 53.0 + wid, 7.0) < 0.7) // smashed window: dark hole with a shard
+        return vec4(lin(gx + gy > 1.05 && gx - gy < 0.1 ? vec3(0.55, 0.65, 0.72) : vec3(0.03, 0.03, 0.04)), 1.0);
       if (night && slotHash(seed * 91.0 + wid, 3.0) > 0.35) { lit = true; return vec4(lin(vec3(1.0, 0.80, 0.45)), 1.0); }
       return vec4(lin(night ? vec3(0.08, 0.10, 0.14) : vec3(0.36, 0.46, 0.55)), 1.0);
     }
     return vec4(wallCol, 1.0);
   }
   float rv = v - wallH;
+  if (wallTop < wallH) return vec4(0.0); // roof gone with the walls
   if (rv >= 0.0 && rv < roofH) {
     float roofHalf = block ? halfW + 0.3 * decorScale : (halfW + 0.6 * decorScale) * (1.0 - rv / roofH);
     if (roofGone) { // bare rafters only
@@ -656,7 +701,6 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
   // intensity (vegetation 50..127) sets the share of filled slots: ~1 tree / 30 m up to a closed canopy.
   float treeSp = 6.0 * decorScale / cellHeight;
   float treeReach = min(16.0 * decorScale / cellHeight, 2.0); // max crown radius + bend, in cells
-  float flutterT = iterNum * 0.03;
   int passes = cHere.valid && treeDensity(cHere) > 0.45 ? 2 : 1; // the back row only exists in dense woods
   for (int pass = 0; pass < 2; pass++) {
     if (pass >= passes) break;
@@ -697,16 +741,39 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
       }
       if (v > h * 1.05 || abs(dx) > h * 1.05) continue; // cheap reject before shaping (fallen trees reach ~h)
       float stiff = sp == 1 ? 0.8 : sp == 2 ? 1.3 : 1.0; // pines stiffer, poplars more flexible
-      float aw = min(abs(windKmh) / 30.0, 1.0);
-      float flutter = sin(flutterT + s * 1.7) * 0.05 * aw;              // quick shiver of the leaves
-      float gustSway = 0.8 + 0.4 * sin(flutterT * 0.35 + s * 0.9);         // slower sway with the gusts
-      float bend = clamp(windKmh / 100.0 * 0.32 * stiff * gustSway + flutter, -0.6, 0.6);
+      // bending: proportional to the wind just above the ground at this tree, swaying with the gusts in real time
+      float w = c.windKmh;
+      float aw = min(abs(w) / 25.0, 1.0);
+      float ph = s * 1.7 + hb.y * 6.3;
+      float flutter = (sin(realTime * 9.0 + ph) * 0.6 + sin(realTime * 14.0 + ph * 2.1) * 0.4) * 0.05 * aw; // leaves shivering
+      float gustSway = 1.0 + 0.32 * sin(realTime * 1.8 + ph) + 0.16 * sin(realTime * 3.3 + ph * 1.3);        // trunk swaying
+      float bend = clamp(w / 55.0 * 0.36 * stiff * gustSway + flutter, -0.65, 0.65);
       if (c.gust < 110.0) { // certainly standing: reject points outside the bent crown's width
         float halfW = sp == 1 ? 0.23 * h : speciesCrown(sp).x * h * 1.3;
-        if (abs(dx - stemLean(min(v, h), h, bend)) > halfW + abs(bend) * 0.4 * h + pxM) continue; // crown is bent as a block
+        if (abs(dx - stemLean(min(v, h), h, bend)) > halfW + (abs(bend) * 0.4 + 0.1) * h + pxM) continue; // crown is bent as a block
       }
       vec4 tc = drawTree(dx, v, h, sp, bend, resist, hb.y, pxM, pass == 0 ? 1.0 : 0.72, c);
       if (tc.a > 0.0) { isTree = true; return tc; }
+    }
+  }
+
+  // storm litter: branches, leaves and tiles lying on the ground where the gusts did damage
+  if (cHere.valid && cHere.gust > 80.0 && vHere < 0.7 * decorScale) {
+    bool town = cHere.type == WALLTYPE_URBAN;
+    float amount = clamp((cHere.gust - 80.0) / 90.0, 0.0, 1.0) * (town ? 0.8 : min(treeDensity(cHere) * 1.5, 1.0));
+    float L = 1.6 * decorScale;
+    float xm = frag.x * cellHeight;
+    float cellI = floor(xm / L);
+    vec4 hk = hash4(cellI * 0.71 + 3.0);
+    if (hk.x < amount * 0.8) {
+      float len = L * (0.35 + 0.45 * hk.y);
+      float x0 = (cellI + 0.1 + 0.5 * hk.z) * L;
+      float th = (town ? 0.22 : 0.18 + 0.2 * step(0.6, hk.w)) * decorScale;
+      if (xm > x0 && xm < x0 + len && vHere < th * (1.0 - 0.6 * abs((xm - x0) / len - 0.5))) {
+        vec3 lc = town ? lin(mix(vec3(0.55, 0.25, 0.17), vec3(0.42, 0.30, 0.20), step(0.5, hk.w)))
+                       : (hk.w > 0.6 ? lin(vec3(0.30, 0.42, 0.16)) : lin(vec3(0.33, 0.25, 0.17)));
+        return vec4(lc, 1.0);
+      }
     }
   }
 
@@ -732,6 +799,7 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
 
 void main()
 {
+  onLight = vec3(0.0); // globals are not guaranteed to start at zero
   vec2 bndFragCoord = vec2(fragCoord.x, clamp(fragCoord.y, 0., resolution.y)); // bound y within range
   base = bilerpWallVis(baseTex, wallTex, bndFragCoord);
   wall = texture(wallTex, bndFragCoord * texelSize);                           // texCoord
