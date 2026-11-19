@@ -3511,14 +3511,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         // actually reachable and would silently mute the sound whenever hail was actually falling.
         const capeExcess = Math.max(guiControls.CAPE - guiControls.hailCapeThreshold, 0);
         const hailFormationActive = guiControls.hailEnabled && capeExcess > 200; // same CAPE qualifying condition as hail spawning
-        const hailMeltFraction = clamp(tempC / 3.0, 0.0, 1.0);                   // 0 = still hail-cold, 1 = fully melted to rain
+        const hailMeltFraction = clamp((tempC - 20.0) / 12.0, 0.0, 1.0);         // hail mostly survives the fall: only very warm air near the ground melts it
         const isHailHere = hailFormationActive && hailMeltFraction < 1.0;
+        // how much of the precipitation here is hail: grows with CAPE above the hail threshold; the rest is rain
+        const hailShare = isHailHere ? clamp(capeExcess / 1500, 0.15, 1.0) * (1.0 - hailMeltFraction) : 0.0;
 
         // rain sound
         let rainVolume = 0;
 
-        if (tempC > 0 && !isHailHere) {
-          rainVolume = Math.pow(waterTextureValues[2] * 0.5, 0.5);
+        if (tempC > 0) {
+          rainVolume = Math.pow(waterTextureValues[2] * 0.5, 0.5) * (1.0 - hailShare);
 
           rainVolume *= map_range_C(tempC, 0., 3., 0., 1.); // rain sound fades as temperature approaches 0 (wet snow)
 
@@ -3535,7 +3537,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         if (isHailHere) {
           const hailPrecipNearGround = waterTextureValues[2]; // PRECIPITATION falling near the camera
 
-          hailVolume = Math.pow(hailPrecipNearGround * 0.5, 0.5) * (1.0 - hailMeltFraction); // fades through the melt band instead of cutting instantly
+          hailVolume = Math.pow(hailPrecipNearGround * 0.5, 0.5) * hailShare; // shares the precipitation with the rain sound
 
           hailVolume *= distVolumeMult;
 
@@ -8546,6 +8548,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   // preload uniform locations for tiny performance gain
   var uniformLocation_boundaryProgram_iterNum = gl.getUniformLocation(boundaryProgram, 'iterNum');
+  var uniformLocation_boundaryProgram_damageTimerStep = gl.getUniformLocation(boundaryProgram, 'damageTimerStep');
   var uniformLocation_setupProgram_seed = gl.getUniformLocation(setupProgram, 'seed');
   var uniformLocation_setupProgram_heightMult = gl.getUniformLocation(setupProgram, 'heightMult');
   var uniformLocation_advectionProgram_userInputValues = gl.getUniformLocation(advectionProgram, 'userInputValues');
@@ -8798,6 +8801,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             // apply vorticity, boundary conditions and user input
             gl.useProgram(boundaryProgram);
             gl.uniform1f(uniformLocation_boundaryProgram_iterNum, iterNum);
+            gl.uniform1f(uniformLocation_boundaryProgram_damageTimerStep, 255 / (1.5 * Math.max(FPS, 5) * Math.max(guiControls.IterPerFrame, 1))); // ~1.5 s of real time
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
             gl.activeTexture(gl.TEXTURE1);

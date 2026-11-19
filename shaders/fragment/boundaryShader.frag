@@ -42,6 +42,7 @@ uniform float iterNum; // used as seed for random function
 
 uniform float dynamicWaterTemperature;
 uniform float kmhPerRaw;      // km/h per raw velocity unit (cells/iteration)
+uniform float damageTimerStep; // storm animation timer units per iteration, so falls last ~1.5 s of real time at any sim speed
 uniform float stormDamage;    // 1 = trees and roofs get damaged by strong surface winds
 
 layout(location = 0) out vec4 base;
@@ -455,8 +456,12 @@ void main()
           float timer = mod(packed, 256.0);
           if (peak < 1.0) timer = 255.0; // empty: nothing to animate
           float dir = water[CLOUD] < 0.0 ? -1.0 : 1.0;
-          if (timer < 255.0 && mod(iterNum, 4.0) < 1.0)
-            timer += 1.0;
+          if (timer < 255.0) {
+            if (damageTimerStep >= 1.0)
+              timer = min(timer + floor(damageTimerStep), 255.0);
+            else if (mod(iterNum, damageTimerStep > 0.0 ? floor(1.0 / damageTimerStep) : 4.0) < 1.0)
+              timer += 1.0;
+          }
           if (timer >= 255.0 && gustKmh > 55.0 && gustKmh > peak + 3.0) {
             prevPeak = peak;
             peak = min(floor(gustKmh), 255.0);

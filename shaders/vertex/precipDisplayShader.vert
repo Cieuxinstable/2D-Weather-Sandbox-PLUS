@@ -9,6 +9,7 @@ out vec2 position_out;
 out vec2 mass_out;
 out float density_out;
 out float cloudAmount_out; // how deep inside the cloud layer this hail particle currently is
+out float zoomVis_out;     // 0 zoomed out .. 1 zoomed in: hail, as fine as snow, only shows up close
 
 uniform vec2 texelSize;
 uniform vec2 aspectRatios;  // sim   canvas
@@ -28,7 +29,7 @@ void main()
     if (!isHail || growth < 0.4) {
       gl_Position = vec4(2.0, 2.0, 0.0, 1.0); // off screen
       gl_PointSize = 0.0;
-      position_out = dropPosition; mass_out = vec2(-1.0); density_out = 0.0; cloudAmount_out = 0.0;
+      position_out = dropPosition; mass_out = vec2(-1.0); density_out = 0.0; cloudAmount_out = 0.0; zoomVis_out = 0.0;
       return;
     }
     float id = float(gl_VertexID);
@@ -70,8 +71,9 @@ void main()
 
   float pointSizePx = view[2] * size / aspectRatios[0]; // scales with camera zoom like every other object in the scene
 
+  zoomVis_out = smoothstep(4.0, 12.0, view[2]);
   if (isHailParticle)
-    pointSizePx = clamp(pointSizePx, 0.6, 5.0); // absolute on-screen cap (diameter 0.6-5px, r=0.3-2.5px): hail must
+    pointSizePx = clamp(pointSizePx, 1.0, 6.0); // absolute on-screen cap (diameter 0.6-5px, r=0.3-2.5px): hail must
                                                  // never balloon into a giant disc just because the camera is zoomed in
 
   gl_PointSize = pointSizePx;

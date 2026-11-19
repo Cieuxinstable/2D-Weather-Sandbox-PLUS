@@ -138,6 +138,8 @@ float lightningIntensityOverTime(float Tin, vec2 lightningPos, float intensity)
   return max((1. / (0.05 + pow(T * 2.0, 3.))) - 0.005, 0.) * pow(intensity, 2.0); // fading out curve
 }
 
+vec3 lightningChannel(vec2 lightningTexCoord, float lightningTime, float currentLightningIntensity);
+
 vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningIntensity)
 {
   vec2 lightningTexCoord = texCoord;
@@ -153,6 +155,13 @@ vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningInten
 
   lightningTexCoord.x += 0.5;                                                                                               // center lightning bolt
 
+  return lightningChannel(lightningTexCoord, lightningTime, currentLightningIntensity);
+}
+
+// Lightning channel from the pre-generated bolt textures, at texture coordinates tc (y = along the channel, growing
+// from 0 during the leader stage), shared by cloud-to-ground bolts and intra-cloud discharges.
+vec3 lightningChannel(vec2 lightningTexCoord, float lightningTime, float currentLightningIntensity)
+{
   if (lightningTexCoord.x < 0.01 || lightningTexCoord.x > 1.01 || lightningTexCoord.y < 0.01 || lightningTexCoord.y > 1.01) // prevent edge effect when mipmapping
     return vec3(0);
 
@@ -301,6 +310,16 @@ vec4 getAirColor(vec2 fragCoordIn)
   if (lightningData[INTENSITY] > 1.0) { // CG
     emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity);
     emittedLight /= 1. + cloudDensity * 100.0;
+  } else if (lightningTime < 6.0) {
+    // Intra-cloud discharge: the same branching channel, laid sideways inside the cloud and spreading both ways from
+    // where it started (like "spider" lightning), dimmer than a ground strike and glowing through the cloud.
+    float dxs = texCoord.x - lightningPos.x;
+    dxs -= floor(dxs + 0.5);                                  // the map wraps around
+    float span = max(lightningPos.y, 0.15) * 0.7;              // horizontal reach, in the same units as the height
+    vec2 tc = vec2(0.5 + (texCoord.y - lightningPos.y) / (span * 0.45), abs(dxs) * aspectRatios[0] / span);
+    if (dxs < 0.0) tc.x = 1.0 - tc.x;                         // the two sides are different branches
+    vec3 ic = lightningChannel(tc, lightningTime, currentLightningIntensity * 0.35);
+    emittedLight += ic / (1. + cloudDensity * 6.0);
   }
 
 #define lightningOnLightBrightness 0.004 // 0.002
@@ -612,7 +631,7 @@ vec4 debrisBurst(float dx, float v, float anim, float dir, float srcY, float src
 vec4 flyingDebris(float xm, float v, float windKmh, float amount, bool tiles, float topM, float pxM)
 {
   float w = abs(windKmh);
-  float minW = tiles ? 110.0 : 45.0;
+  float minW = tiles ? 110.0 : 65.0;
   if (w < minW || amount <= 0.0) return vec4(0.0);
   amount *= clamp((w - minW) / 60.0, 0.0, 1.0) * (1.0 - smoothstep(topM * 0.7, topM * 1.4, v));
   if (amount <= 0.0) return vec4(0.0);
@@ -621,7 +640,7 @@ vec4 flyingDebris(float xm, float v, float windKmh, float amount, bool tiles, fl
   vec2 P = vec2(xm - phase, v);
   vec2 cell = floor(P / G);
   vec4 hk = hash4(cell.x * 0.37 + cell.y * 57.13);
-  if (hk.x > amount * (tiles ? 0.25 : 0.5)) return vec4(0.0);
+  if (hk.x > amount * (tiles ? 0.2 : 0.22)) return vec4(0.0); // a few pieces, not a cloud of specks
   vec2 ctr = (cell + 0.2 + 0.6 * hk.yz) * G;
   ctr.y += sin(iterNum * 0.02 + hk.w * 6.3) * G * 0.2;          // flutter up and down
   vec2 d = P - ctr;
@@ -783,7 +802,7 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
       float dx = (frag.x - xc) * cellHeight;
       float v = (frag.y - c.groundTop) * cellHeight;
       vec4 hb = hash4(sid * 5.31 + 77.0); // x: resistance, y: seed
-      float resist = 0.88 + 0.24 * hb.x;
+      float resist = pass == 1 ? 0.7 : 0.88 + 0.24 * hb.x; // back row gives way first, so no intact tree shows up behind a felled one
       // leaves and branches thrown off by the last peak gust
       if (c.anim < 1.0 && c.gust > c.prevGust) {
         vec3 thr = speciesThresholds(sp) * resist;
