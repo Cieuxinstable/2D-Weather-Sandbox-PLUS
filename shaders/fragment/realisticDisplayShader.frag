@@ -721,7 +721,7 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
 
   // crop fields: blocks of wheat, maize, colza or meadow, stalks waving in travelling gusts, flattened (lodged)
   // where a strong gust went through, white under snow.
-  if (cHere.valid && cHere.type == WALLTYPE_FIELD && vHere < 3.0 * decorScale) {
+  if (cHere.valid && cHere.type == WALLTYPE_FIELD && vHere < 6.0 * decorScale) {
     float xm = frag.x * cellHeight;
     float blockW = 60.0 * decorScale;
     float blk = floor(xm / blockW);
@@ -729,12 +729,12 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
     vec4 hk = hash4(blk * 0.53 + 41.0);
     int crop = hk.x < 0.35 ? 0 : hk.x < 0.6 ? 1 : hk.x < 0.8 ? 2 : 3; // wheat, maize, colza, meadow
     if (inBlk > 1.5 * decorScale && inBlk < blockW - 1.5 * decorScale) { // bare path between fields
-      float H = (crop == 0 ? 1.0 : crop == 1 ? 2.6 : crop == 2 ? 1.4 : 0.5) * decorScale;
+      float H = (crop == 0 ? 1.0 : crop == 1 ? 2.6 : crop == 2 ? 1.4 : 0.5) * decorScale * 2.0; // exaggerated like the trees, to be visible
       float lodged = smoothstep(80.0, 110.0, cHere.gust);                 // flattened by the storm
       float w = cHere.windKmh;
       float wave = 0.5 + 0.5 * sin(realTime * 2.2 - xm * 0.12 * sign(w + 0.001));
       float bendC = clamp(abs(w) / 50.0, 0.0, 1.0) * (0.25 + 0.35 * wave);
-      float stalkW = 0.3 * decorScale;
+      float stalkW = 0.45 * decorScale;
       float si = floor(xm / stalkW);
       float hs = fract(sin(si * 12.9898 + blk) * 43758.5453);
       float top = H * (0.85 + 0.3 * hs) * (1.0 - 0.45 * bendC) * mix(1.0, 0.3, lodged);
