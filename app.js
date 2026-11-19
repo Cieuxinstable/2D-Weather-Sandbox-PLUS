@@ -2271,7 +2271,7 @@ class LoadingBar
     document.body.appendChild(this.#el);
 
     this.#factIndex = Math.floor(Math.random() * LOADING_FACTS.length);
-    this.#showFact();
+    this.#fact.innerHTML = '<b>Le saviez-vous ?</b> ' + LOADING_FACTS[this.#factIndex]; // first fact right away
     this.#factTimer = setInterval(() => this.#showFact(), 4500);
     // creep slowly toward the next milestone while a long step runs, so the bar never looks stuck
     this.#timer = setInterval(() => {
