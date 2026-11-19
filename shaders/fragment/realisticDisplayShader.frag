@@ -719,6 +719,42 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
     }
   }
 
+  // crop fields: blocks of wheat, maize, colza or meadow, stalks waving in travelling gusts, flattened (lodged)
+  // where a strong gust went through, white under snow.
+  if (cHere.valid && cHere.type == WALLTYPE_FIELD && vHere < 3.0 * decorScale) {
+    float xm = frag.x * cellHeight;
+    float blockW = 60.0 * decorScale;
+    float blk = floor(xm / blockW);
+    float inBlk = xm - blk * blockW;
+    vec4 hk = hash4(blk * 0.53 + 41.0);
+    int crop = hk.x < 0.35 ? 0 : hk.x < 0.6 ? 1 : hk.x < 0.8 ? 2 : 3; // wheat, maize, colza, meadow
+    if (inBlk > 1.5 * decorScale && inBlk < blockW - 1.5 * decorScale) { // bare path between fields
+      float H = (crop == 0 ? 1.0 : crop == 1 ? 2.6 : crop == 2 ? 1.4 : 0.5) * decorScale;
+      float lodged = smoothstep(80.0, 110.0, cHere.gust);                 // flattened by the storm
+      float w = cHere.windKmh;
+      float wave = 0.5 + 0.5 * sin(realTime * 2.2 - xm * 0.12 * sign(w + 0.001));
+      float bendC = clamp(abs(w) / 50.0, 0.0, 1.0) * (0.25 + 0.35 * wave);
+      float stalkW = 0.3 * decorScale;
+      float si = floor(xm / stalkW);
+      float hs = fract(sin(si * 12.9898 + blk) * 43758.5453);
+      float top = H * (0.85 + 0.3 * hs) * (1.0 - 0.45 * bendC) * mix(1.0, 0.3, lodged);
+      if (vHere < top) {
+        float t = vHere / max(top, 0.01);
+        vec3 c;
+        float dry = clamp(1.0 - cHere.soilMoisture / fullGreenSoilMoisture, 0.0, 1.0);
+        if (crop == 0) c = mix(vec3(0.62, 0.52, 0.22), vec3(0.90, 0.77, 0.38), t);                        // wheat
+        else if (crop == 1) c = t > 0.9 ? vec3(0.80, 0.72, 0.40) : mix(vec3(0.20, 0.36, 0.12), vec3(0.34, 0.58, 0.20), t); // maize, tassels on top
+        else if (crop == 2) c = t > 0.68 ? mix(vec3(0.85, 0.74, 0.12), vec3(0.98, 0.88, 0.22), hs) : mix(vec3(0.22, 0.38, 0.14), vec3(0.36, 0.56, 0.20), t); // colza
+        else c = (t > 0.8 && hs > 0.85) ? vec3(0.92, 0.90, 0.80) : mix(vec3(0.24, 0.42, 0.14), vec3(0.42, 0.64, 0.24), t);     // meadow, a few flowers
+        if (crop != 0) c = mix(c, vec3(0.62, 0.55, 0.30), dry * 0.4);
+        c = mix(c, c * vec3(0.75, 0.68, 0.55), lodged * 0.6);                                       // broken, brownish
+        c *= 0.88 + 0.12 * fract(si * 0.618);                                                      // row-to-row variation
+        c = mix(c, vec3(0.95), clamp(cHere.snow / fullWhiteSnowHeight, 0.0, 1.0) * smoothstep(0.4, 1.0, t));
+        return vec4(lin(c), 1.0);
+      }
+    }
+  }
+
   // trees: a front row of slots every 6 m and, in dense woods, a darker back row in between. The Land brush
   // intensity (vegetation 50..127) sets the share of filled slots: ~1 tree / 30 m up to a closed canopy.
   float treeSp = 6.0 * decorScale / cellHeight;
@@ -885,6 +921,7 @@ void main()
     case WALLTYPE_URBAN:
     case WALLTYPE_INDUSTRIAL:
     case WALLTYPE_FIRE:
+    case WALLTYPE_FIELD:
     case WALLTYPE_LAND:
 
       // horizontally interpolate depth value
@@ -1091,7 +1128,7 @@ void main()
           vec4 surfaceWater = texture(waterTex, texCoordX0Ym);
           if (surfaceWater[SNOW] * 0.01 / cellHeight > heightAboveGround && !decorDrawn)
             texCol = vec4(vec3(1.), 1.); // snow layer on the ground
-        } else if (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_URBAN) { // land below
+        } else if (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_FIELD || wallX0Ym[TYPE] == WALLTYPE_URBAN) { // land below
           vec4 surfaceWater = texture(waterTex, texCoordX0Ym);                     // snow on land below
           float snow = surfaceWater[SNOW];
           if (snow * 0.01 / cellHeight > heightAboveGround)

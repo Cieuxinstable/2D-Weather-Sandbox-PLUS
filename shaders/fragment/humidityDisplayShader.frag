@@ -40,6 +40,7 @@ void main()
       fragmentColor = vec4(0, 0, 0, 1.);
       break;
     case WALLTYPE_LAND:
+    case WALLTYPE_FIELD:
       fragmentColor = vec4(vec3(0.10), 1.);
       break;
     case WALLTYPE_WATER:

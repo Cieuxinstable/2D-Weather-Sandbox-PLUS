@@ -5432,6 +5432,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Terre' : 'TOOL_WALL_LAND',
         'Lac / mer' : 'TOOL_WALL_SEA',
         'Ville' : 'TOOL_WALL_URBAN',
+        'Champs' : 'TOOL_WALL_FIELD',
         'Piste' : 'TOOL_WALL_RUNWAY',
         'Industrie' : 'TOOL_WALL_INDUSTRIAL',
         'Feu' : 'TOOL_WALL_FIRE',
@@ -7416,6 +7417,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.tool = 'TOOL_WALL_RUNWAY';
     } else if (event.code == 'Backslash') {
       guiControls.tool = 'TOOL_WALL_INDUSTRIAL';
+    } else if (event.code == 'KeyJ') {
+      guiControls.tool = 'TOOL_WALL_FIELD';
     } else if (event.code == 'KeyN') {
       if (displayWeatherStations) {
         displayWeatherStations = false;
@@ -7512,6 +7515,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   // load shaders
   // Download every shader file at once (in parallel) instead of one blocking request after another
+  var sourceCache = {}; // filled by prefetchSources(), read by loadSourceFile() (both declared further down)
   const SHADER_FILES = [ 'simShader.vert', 'dispShader.vert', 'realDispShader.vert', 'precipDisplayShader.vert', 'postProcessingShader.vert', 'pressureShader.frag', 'velocityShader.frag', 'advectionShader.frag', 'curlShader.frag', 'vorticityShader.frag', 'boundaryShader.frag', 'lightingShader.frag', 'lightningLocationShader.frag', 'setupShader.frag', 'temperatureDisplayShader.frag', 'airQualityDisplayShader.frag', 'humidityDisplayShader.frag', 'precipDisplayShader.frag', 'universalDisplayShader.frag', 'skyBackgroundDisplayShader.frag', 'realisticDisplayShader.frag', 'IRtempDisplayShader.frag', 'postProcessingShader.frag', 'isolateBrightPartsShader.frag', 'bloomBlurShader.frag', 'precipitationShader.vert', 'precipitationShader.frag' ];
   await prefetchSources([ 'shaders/common.glsl', 'shaders/commonDisplay.glsl' ].concat(SHADER_FILES.map(f => 'shaders/' + (f.endsWith('.vert') ? 'vertex/' : 'fragment/') + f)));
   var shadersLoaded = 0;
@@ -8702,6 +8706,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           inputType = 15;
         else if (guiControls.tool == 'TOOL_WALL_INDUSTRIAL')
           inputType = 16;
+        else if (guiControls.tool == 'TOOL_WALL_FIELD')
+          inputType = 17;
 
         // Surface environment modifiers
         else if (guiControls.tool == 'TOOL_WALL_MOIST')
@@ -9623,7 +9629,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   }
 
   // Shader sources downloaded in parallel at startup (see prefetchSources); loadSourceFile falls back to a request.
-  const sourceCache = {};
   async function prefetchSources(paths)
   {
     await Promise.all(paths.map(path => fetch(path)
