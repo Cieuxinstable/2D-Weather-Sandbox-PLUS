@@ -2195,96 +2195,147 @@ function loadImage(url)
   });
 }
 
+// Loading screen: a centred card with a smoothly animated bar that keeps creeping forward between steps (so it never
+// looks frozen), the current step in plain French, and short weather facts that change every few seconds.
+const LOADING_FACTS = [
+  'Un cumulonimbus peut contenir plus de 500 000 tonnes d\'eau.',
+  'La grêle grossit en remontant plusieurs fois dans le courant ascendant de l\'orage.',
+  'Un flocon tombe à environ 1 m/s, une goutte de pluie à 6 à 9 m/s.',
+  'La foudre chauffe l\'air à près de 30 000 °C, cinq fois la surface du Soleil.',
+  'Un downburst peut produire des rafales de plus de 150 km/h au sol.',
+  'Le CAPE mesure l\'énergie disponible pour les courants ascendants des orages.',
+  'Le ciel vert sous un orage annonce souvent de très gros cœurs de pluie ou de grêle.',
+  'Une ligne de grains peut s\'étendre sur plusieurs centaines de kilomètres.',
+  'Le cisaillement du vent avec l\'altitude organise les orages en supercellules.',
+  'Le son du tonnerre parcourt environ 1 km toutes les 3 secondes.',
+];
+
 class LoadingBar
 {
-  #loadingBar;
-  #bar;
-  #underBar;
-  #percent;
-  #description;
+  #el;
+  #fill;
+  #pct;
+  #step;
+  #fact;
+  #shown = 0;      // percentage currently displayed (animated)
+  #target = 0;     // last real progress reported
+  #timer = null;
+  #factTimer = null;
+  #factIndex = 0;
+  #error = false;
 
   constructor(percentIn)
   {
-    if (percentIn == null)
-      this.percent = 0;
-    else
-      this.percent = percentIn;
+    this.#target = percentIn == null ? 0 : percentIn;
+    this.#shown = this.#target;
 
-    // create html
-    this.loadingBar = document.createElement('div');
-    this.bar = document.createElement('div');
-    this.loadingBar.appendChild(this.bar);
+    if (!document.getElementById('loadingBarStyle')) {
+      const st = document.createElement('style');
+      st.id = 'loadingBarStyle';
+      st.textContent = `
+        #gameLoading { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px;
+          background: radial-gradient(ellipse at 50% 30%, #1d3156 0%, #0b1220 70%); color: #fff;
+          font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+        #gameLoading .card { width: min(520px, 100%); display: grid; gap: 14px; text-align: left; }
+        #gameLoading h2 { margin: 0; font: 600 clamp(20px, 4vw, 26px) 'Space Grotesk', 'Inter', system-ui, sans-serif; letter-spacing: .01em; }
+        #gameLoading .track { position: relative; height: 12px; border-radius: 999px; overflow: hidden;
+          background: rgba(255,255,255,.10); box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
+        #gameLoading .fill { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: inherit;
+          background: linear-gradient(90deg, #2f80ed, #5aa9ff 60%, #9fd0ff); transition: width .35s ease-out; }
+        #gameLoading .fill::after { content: ''; position: absolute; inset: 0;
+          background: linear-gradient(90deg, transparent, rgba(255,255,255,.45), transparent);
+          transform: translateX(-100%); animation: gameLoadingShine 1.4s ease-in-out infinite; }
+        @keyframes gameLoadingShine { to { transform: translateX(100%); } }
+        #gameLoading .row { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; color: rgba(226,236,255,.75); }
+        #gameLoading .pct { font-variant-numeric: tabular-nums; color: #fff; }
+        #gameLoading .fact { min-height: 3em; font-size: 14px; line-height: 1.45; color: rgba(226,236,255,.6); transition: opacity .4s; }
+        #gameLoading .fact b { color: #ffcc4d; font-weight: 600; }
+        #gameLoading.error .fill { background: #ff6b6b; }
+        #gameLoading.error .fill::after { display: none; }
+        #gameLoading .err { white-space: pre-wrap; font: 13px/1.35 ui-monospace, Menlo, monospace; color: #ffd0d0;
+          background: rgba(255,107,107,.12); border-radius: 10px; padding: 10px 12px; max-height: 45vh; overflow: auto; }
+        @media (prefers-reduced-motion: reduce) { #gameLoading .fill::after { animation: none; } #gameLoading .fill { transition: none; } }`;
+      document.head.appendChild(st);
+    }
 
-    this.underBar = document.createElement('div');
-    this.loadingBar.appendChild(this.underBar);
+    this.#el = document.createElement('div');
+    this.#el.id = 'gameLoading';
+    this.#el.innerHTML = '<div class="card"><h2>Préparation de la simulation</h2>'
+      + '<div class="track"><div class="fill"></div></div>'
+      + '<div class="row"><span class="step"></span><span class="pct"></span></div>'
+      + '<div class="fact"></div></div>';
+    this.#fill = this.#el.querySelector('.fill');
+    this.#pct = this.#el.querySelector('.pct');
+    this.#step = this.#el.querySelector('.step');
+    this.#fact = this.#el.querySelector('.fact');
+    document.body.appendChild(this.#el);
 
-    this.loadingBar.style.width = '100%';
-    this.loadingBar.style.height = '100px';
-    this.loadingBar.style.color = 'white';
-    this.loadingBar.style.textAlign = 'center';
-    this.loadingBar.style.lineHeight = '50px';
-    this.loadingBar.style.backgroundColor = 'gray';
-    this.loadingBar.style.marginTop = Math.round(Math.min(400, window.innerHeight * 0.35)) + 'px'; // stays on screen on phones in landscape
-    this.loadingBar.style.position = 'absolute';
-    this.loadingBar.style.zIndex = '2';
-
-    this.underBar.style.width = '100%';
-    this.underBar.style.height = '50px';
-    this.underBar.style.backgroundColor = 'black';
-
-    this.bar.style.height = '50px';
-
-    this.bar.style.backgroundColor = 'green';
-    this.bar.style.fontSize = '20px';
-
-    this.#update();
-
-    document.body.appendChild(this.loadingBar);
+    this.#factIndex = Math.floor(Math.random() * LOADING_FACTS.length);
+    this.#fact.innerHTML = '<b>Le saviez-vous ?</b> ' + LOADING_FACTS[this.#factIndex]; // first fact right away
+    this.#factTimer = setInterval(() => this.#showFact(), 4500);
+    // creep slowly toward the next milestone while a long step runs, so the bar never looks stuck
+    this.#timer = setInterval(() => {
+      if (this.#error) return;
+      const cap = Math.min(this.#target + 9, 99);
+      if (this.#shown < cap) {
+        this.#shown += Math.max(0.15, (cap - this.#shown) * 0.04);
+        this.#render();
+      }
+    }, 120);
+    this.#render();
   }
 
-  async add(num, text)
+  #showFact()
   {
-    this.percent += num;
-    this.description = text;
-    await this.#update();
+    this.#fact.style.opacity = 0;
+    setTimeout(() => {
+      this.#factIndex = (this.#factIndex + 1) % LOADING_FACTS.length;
+      this.#fact.innerHTML = '<b>Le saviez-vous ?</b> ' + LOADING_FACTS[this.#factIndex];
+      this.#fact.style.opacity = 1;
+    }, 400);
   }
+
+  #render()
+  {
+    const p = Math.min(Math.max(this.#shown, 0), 100);
+    this.#fill.style.width = p + '%';
+    this.#pct.textContent = Math.round(p) + ' %';
+  }
+
+  get percent() { return this.#target; }
+
+  async add(num, text) { await this.set(this.#target + num, text); }
 
   async set(num, text)
   {
-    this.percent = num;
-    this.description = text;
-    await this.#update();
+    this.#target = num;
+    if (this.#shown < num) this.#shown = num;
+    if (text != null) this.#step.textContent = text;
+    this.#render();
+    await new Promise(resolve => setTimeout(resolve, 0)); // let the page repaint
   }
 
   async showError(error)
   {
-    this.bar.style.backgroundColor = 'red';
-    // shown in full (wrapping, small text) so a player can screenshot the exact driver message
-    this.underBar.style.height = 'auto';
-    this.underBar.style.lineHeight = '1.35';
-    this.underBar.style.fontSize = '13px';
-    this.underBar.style.padding = '8px 12px';
-    this.underBar.style.whiteSpace = 'pre-wrap';
-    this.description = String(error).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    await this.#update();
+    this.#error = true;
+    this.#el.classList.add('error');
+    this.#step.textContent = 'Erreur';
+    clearInterval(this.#factTimer);
+    this.#fact.innerHTML = '';
+    const pre = document.createElement('div');
+    pre.className = 'err';
+    pre.textContent = String(error); // shown in full so a player can screenshot the exact driver message
+    this.#fact.appendChild(pre);
+    this.#fact.style.opacity = 1;
+    await new Promise(resolve => setTimeout(resolve, 0));
   }
 
-  #update()
+  remove()
   {
-    return new Promise((resolve) => {
-      this.bar.style.width = this.percent + '%';
-      this.bar.innerHTML = this.percent + ' %';
-      this.underBar.innerHTML = this.description;
-      let timeout;
-      if (this.percent == 100)
-        timeout = 5;
-      else
-        timeout = 5; // 50 for nicer feel
-      setTimeout(() => { resolve(); }, timeout);
-    });
+    clearInterval(this.#timer);
+    clearInterval(this.#factTimer);
+    this.#el.remove();
   }
-
-  remove() { this.loadingBar.parentNode.removeChild(this.loadingBar); }
 }
 
 
@@ -5381,6 +5432,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Terre' : 'TOOL_WALL_LAND',
         'Lac / mer' : 'TOOL_WALL_SEA',
         'Ville' : 'TOOL_WALL_URBAN',
+        'Champs' : 'TOOL_WALL_FIELD',
         'Piste' : 'TOOL_WALL_RUNWAY',
         'Industrie' : 'TOOL_WALL_INDUSTRIAL',
         'Feu' : 'TOOL_WALL_FIRE',
@@ -5796,7 +5848,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   // guiControls.paused = true; // pause before first iteration for debugging
 
-  await loadingBar.set(3, 'Initializing Sounding Graph');
+  await loadingBar.set(3, 'Préparation du sondage');
   // END OF GUI
 
   function startSimulation()
@@ -6886,7 +6938,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   };
   soundingGraph.init();
 
-  await loadingBar.set(6, 'Setting up eventlisteners');
+  await loadingBar.set(6, 'Mise en place des commandes');
   // END OF GRAPH
 
 
@@ -7365,6 +7417,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.tool = 'TOOL_WALL_RUNWAY';
     } else if (event.code == 'Backslash') {
       guiControls.tool = 'TOOL_WALL_INDUSTRIAL';
+    } else if (event.code == 'KeyJ') {
+      guiControls.tool = 'TOOL_WALL_FIELD';
     } else if (event.code == 'KeyN') {
       if (displayWeatherStations) {
         displayWeatherStations = false;
@@ -7446,7 +7500,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
   });
 
-  await loadingBar.set(9, 'Setting up WebGL');
+  await loadingBar.set(9, 'Démarrage du moteur graphique');
 
   gl.getExtension('EXT_color_buffer_float');
   gl.getExtension('EXT_float_blend');
@@ -7460,6 +7514,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
+  // Download every shader file at once (in parallel) instead of one blocking request after another
+  var sourceCache = {}; // filled by prefetchSources(), read by loadSourceFile() (both declared further down)
+  const SHADER_FILES = [ 'simShader.vert', 'dispShader.vert', 'realDispShader.vert', 'precipDisplayShader.vert', 'postProcessingShader.vert', 'pressureShader.frag', 'velocityShader.frag', 'advectionShader.frag', 'curlShader.frag', 'vorticityShader.frag', 'boundaryShader.frag', 'lightingShader.frag', 'lightningLocationShader.frag', 'setupShader.frag', 'temperatureDisplayShader.frag', 'airQualityDisplayShader.frag', 'humidityDisplayShader.frag', 'precipDisplayShader.frag', 'universalDisplayShader.frag', 'skyBackgroundDisplayShader.frag', 'realisticDisplayShader.frag', 'IRtempDisplayShader.frag', 'postProcessingShader.frag', 'isolateBrightPartsShader.frag', 'bloomBlurShader.frag', 'precipitationShader.vert', 'precipitationShader.frag' ];
+  await prefetchSources([ 'shaders/common.glsl', 'shaders/commonDisplay.glsl' ].concat(SHADER_FILES.map(f => 'shaders/' + (f.endsWith('.vert') ? 'vertex/' : 'fragment/') + f)));
+  var shadersLoaded = 0;
+
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
 
@@ -7525,7 +7585,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   // const lightBlurProgram = createProgram(postProcessingVertexShader, bloomBlurShader);
 
 
-  await loadingBar.set(80, 'Setting up textures');
+  await loadingBar.set(80, 'Création de l\'atmosphère');
 
   // // quad that fills the screen, so fragment shader is run for every pixel //
   // X, Y,  U, V  (x4)
@@ -8196,7 +8256,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     lightningGeneratorWorker.postMessage({width : 2500, height : 5000}); // 10000 5000
   }
 
-  await loadingBar.set(90, 'Setting up FBO`s');
+  await loadingBar.set(90, 'Préparation de l\'affichage');
 
   createHdrFBO();
 
@@ -8477,7 +8537,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     soundSystem = new SoundSystem();
   }
 
-  await loadingBar.set(95, 'Loading sounds and generating lightning textures'); // loading complete
+  await loadingBar.set(95, 'Sons et éclairs'); // loading complete
   await loadingBar.remove();
 
   var srcVAO;
@@ -8646,6 +8706,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           inputType = 15;
         else if (guiControls.tool == 'TOOL_WALL_INDUSTRIAL')
           inputType = 16;
+        else if (guiControls.tool == 'TOOL_WALL_FIELD')
+          inputType = 17;
 
         // Surface environment modifiers
         else if (guiControls.tool == 'TOOL_WALL_MOIST')
@@ -9549,18 +9611,36 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.transformFeedbackVaryings(program, transform_feedback_varyings, gl.INTERLEAVED_ATTRIBS);
 
     gl.linkProgram(program);
-    gl.validateProgram(program);
     if (gl.getProgramParameter(program, gl.LINK_STATUS)) {
       return program; // linked succesfully
     } else {
+      // a shader that did not compile is the usual cause: show its own log (on screen, so it can be reported from a phone)
+      for (const sh of [ vertexShader, fragmentShader ]) {
+        if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+          const shLog = gl.getShaderInfoLog(sh);
+          loadingBar.showError('Le shader ' + sh.__name + ' ne compile pas sur cet appareil.\n' + shLog);
+          throw sh.__name + ' COMPILATION ' + shLog;
+        }
+      }
       const log = gl.getProgramInfoLog(program);
       loadingBar.showError('Un programme graphique ne peut pas être assemblé sur cet appareil.\n' + log);
       throw 'ERROR: ' + log;
     }
   }
 
+  // Shader sources downloaded in parallel at startup (see prefetchSources); loadSourceFile falls back to a request.
+  async function prefetchSources(paths)
+  {
+    await Promise.all(paths.map(path => fetch(path)
+                                          .then(r => r.ok ? r.text() : null)
+                                          .then(t => { if (t != null) sourceCache[path] = t; })
+                                          .catch(() => {})));
+  }
+
   async function loadSourceFile(fileName)
   {
+    if (sourceCache[fileName] !== undefined)
+      return sourceCache[fileName];
     try {
       var request = new XMLHttpRequest();
       request.open('GET', fileName, false);
@@ -9612,18 +9692,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.shaderSource(shader, shaderSource);
     // console.time('compileShader');
     gl.compileShader(shader);
-    // console.timeEnd('compileShader')
-
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      // Compile error: shown on screen, not only in the console, so it can be reported from a phone
-      const log = gl.getShaderInfoLog(shader);
-      await loadingBar.showError('Le shader ' + nameIn + ' ne compile pas sur cet appareil.\n' + log);
-      throw filename + ' COMPILATION ' + log;
-    }
-    return new Promise(async (resolve) => {
-      await loadingBar.add(3, 'Loading shader: ' + nameIn);
-      resolve(shader);
-    });
+    // The compile status is NOT queried here: asking for it right away forces the driver to finish each compile
+    // before the next one starts. Errors are reported when the program is linked (createProgram), and meanwhile the
+    // driver can compile in the background.
+    shader.__name = nameIn;
+    shadersLoaded++;
+    await loadingBar.set(9 + Math.round(68 * shadersLoaded / 27), 'Compilation des effets graphiques (' + shadersLoaded + '/27)');
+    return shader;
   }
 
   function adjIterPerFrame(adj) { guiControls.IterPerFrame = Math.round(clamp(guiControls.IterPerFrame + adj, 1, 50)); }

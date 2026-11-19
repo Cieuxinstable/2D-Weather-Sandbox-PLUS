@@ -100,6 +100,7 @@ void main()
             reflectedLight.rgb += vec3(1.00, 0.97, 0.57) * 0.03; // Urban area emits light
                                                                  // NOBREAK
         case WALLTYPE_LAND:
+        case WALLTYPE_FIELD:
           IR_up = IR_emitted(realTemp);                          // Ir emmited upwards from surface. emissivity of surface = 1.0 for simplicity
           net_heating += (IR_down - IR_up) * lightHeatingConst;
           break;

@@ -227,7 +227,7 @@ void main()
 
         float albedoTotal = 1.0;
 
-        if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE) {
+        if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIELD || wall[TYPE] == WALLTYPE_FIRE) {
           float albedoSoil = map_rangeC(soilMoisture, 0., 20., ALBEDO_DRYSOIL, ALBEDO_WETSOIL);
           albedoSoil = map_rangeC(snowCover, 0.0, fullWhiteSnowHeight, albedoSoil, ALBEDO_SNOW);                         // add snow albedo
           float fullVegetationAlbedo = map_range(snowCover, 0., fullWhiteSnowHeight, ALBEDO_FOREST, ALBEDO_SNOW_FOREST); // the albedo of full tree height with snow taken into account
@@ -280,7 +280,7 @@ void main()
         float surfaceDrag = 0.0015; // water or runway
         if (wall[TYPE] == WALLTYPE_URBAN)
           surfaceDrag = 0.040;
-        else if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE)
+        else if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIELD || wall[TYPE] == WALLTYPE_FIRE)
           surfaceDrag = map_rangeC(float(wall[VEGETATION]), 50., 127., 0.0015, 0.020);
 
         // base[VX] *= 1. - surfaceDrag;                        // surface drag
@@ -351,6 +351,7 @@ void main()
       case WALLTYPE_URBAN:
         water[SMOKE] += 0.000002; // Urban produces smog
         // nobreak!
+      case WALLTYPE_FIELD:
       case WALLTYPE_LAND:
         if (wall[VERT_DISTANCE] <= wallVerticalInfluence) {
 
@@ -416,6 +417,7 @@ void main()
               wall[TYPE] = WALLTYPE_LAND;             // turn off fire
           }
         }
+      case WALLTYPE_FIELD:
       case WALLTYPE_LAND:                                                                                          // no break,can also be fire or urban:
         water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + precipDeposition[RAIN_DEPOSITION] * 0.1, 0.0, 1000.0); // rain accumulation
         water[SNOW] = clamp(water[SNOW] + precipDeposition[SNOW_DEPOSITION] * snowMassToHeight, 0.0, 4000.0);      // snow accumulation in cm
@@ -476,12 +478,12 @@ void main()
           float totalNeighborSnow = 0.0;
           float totalNeighborSoilMoisture = 0.0;
 
-          if (wallXmY0[VERT_DISTANCE] == 0 && (wallXmY0[TYPE] == WALLTYPE_LAND || wallXmY0[TYPE] == WALLTYPE_URBAN)) {
+          if (wallXmY0[VERT_DISTANCE] == 0 && (wallXmY0[TYPE] == WALLTYPE_LAND || wallXmY0[TYPE] == WALLTYPE_FIELD || wallXmY0[TYPE] == WALLTYPE_URBAN)) {
             totalNeighborSnow += texture(waterTex, texCoordXmY0)[SNOW];
             totalNeighborSoilMoisture += texture(waterTex, texCoordXmY0)[SOIL_MOISTURE];
             numNeighbors += 1.;
           }
-          if (wallXpY0[VERT_DISTANCE] == 0 && (wallXpY0[TYPE] == WALLTYPE_LAND || wallXpY0[TYPE] == WALLTYPE_URBAN)) {
+          if (wallXpY0[VERT_DISTANCE] == 0 && (wallXpY0[TYPE] == WALLTYPE_LAND || wallXpY0[TYPE] == WALLTYPE_FIELD || wallXpY0[TYPE] == WALLTYPE_URBAN)) {
             totalNeighborSnow += texture(waterTex, texCoordXpY0)[SNOW];
             totalNeighborSoilMoisture += texture(waterTex, texCoordXpY0)[SOIL_MOISTURE];
             numNeighbors += 1.;
