@@ -240,17 +240,20 @@ vec4 getAirColor(vec2 fragCoordIn)
     float amt = smoothstep(0.3, 1.2, water[PRECIPITATION]) * inShadow * dayGate * min(greenHueStrength, 1.5);
     if (amt > 0.001) {
       float hail = 1.0 - smoothstep(CtoK(-5.0), CtoK(5.0), realTemp);
-      vec3 coreHue = mix(vec3(0.28, 0.86, 0.88), vec3(0.22, 0.95, 0.52), 0.15 + 0.7 * hail);
+      vec3 coreHue = mix(vec3(0.34, 0.78, 0.60), vec3(0.30, 0.86, 0.45), 0.15 + 0.7 * hail); // greener than the EXTRA fork's teal
       const vec3 lumW = vec3(0.2126, 0.7152, 0.0722);
       vec3 hk = coreHue * (max(dot(cloudCol, lumW), 1e-4) / dot(coreHue, lumW)); // same brightness, new hue
       vec3 tinted = mix(cloudCol * mix(vec3(1.0), hk, 0.55), hk, 0.38);
-      cloudCol = mix(cloudCol, tinted, smoothstep(0.02, 0.5, amt) * 0.52);
+      cloudCol = mix(cloudCol, tinted, smoothstep(0.02, 0.5, amt) * 0.35);
     }
   }
 
   float cloudDensity = max(cloudwater * 13.6, 0.0);
 
-  float totalDensity = cloudDensity + water[PRECIPITATION] * 0.8; // visualize precipitation
+  // visualize precipitation. Snowflakes fall ~5x slower than raindrops and scatter more light, so the same
+  // precipitation rate looks much denser as snow: thicken it below freezing (wet snow in between).
+  float snowFactor = 1.0 - map_rangeC(KtoC(realTemp), 0.0, 3.0, 0.0, 1.0);
+  float totalDensity = cloudDensity + water[PRECIPITATION] * 0.8 * (1.0 + 1.6 * snowFactor);
 
 
   // float cloudOpacity = clamp(cloudwater * 4.0, 0.0, 1.0);
@@ -380,33 +383,42 @@ float stemLean(float v, float h, float bend) { return bend * h * (v / h) * (v / 
 // Damage thresholds in km/h: x = leaves (needles) torn, y = branches broken, z = trunk snapped / uprooted.
 vec3 speciesThresholds(int sp) { return sp == 0 ? vec3(85., 115., 175.) : sp == 1 ? vec3(140., 105., 140.) : sp == 2 ? vec3(70., 90., 130.) : vec3(70., 95., 165.); }
 vec3 speciesLeaf(int sp) { return sp == 0 ? vec3(0.25, 0.42, 0.16) : sp == 1 ? vec3(0.14, 0.31, 0.18) : sp == 2 ? vec3(0.42, 0.56, 0.23) : vec3(0.52, 0.65, 0.28); }
-vec4 speciesCrown(int sp) { return sp == 0 ? vec4(0.44, 0.32, 0.62, 8.) : sp == 2 ? vec4(0.16, 0.42, 0.56, 6.) : vec4(0.30, 0.33, 0.62, 7.); } // rx, ry, centre height (share of h), clumps
+vec4 speciesCrown(int sp) { return sp == 0 ? vec4(0.44, 0.32, 0.62, 11.) : sp == 2 ? vec4(0.16, 0.42, 0.56, 9.) : vec4(0.30, 0.33, 0.62, 10.); } // rx, ry, centre height (share of h), clumps
 
 // Standing (or fallen, already in the tree's own frame) tree at point (dx, v), meters from its base.
 // Returns rgb + alpha 0 when nothing. vMin: only parts above that height are drawn (the broken top).
+// Shade of a colour like the validated mockup: f > 0 towards white, f < 0 towards black (in display space).
+vec3 mockShade(vec3 c, float f) { return lin(f > 0.0 ? c + (1.0 - c) * f : c * (1.0 + f)); }
+
 vec4 treeShape(float dx, float v, float h, int sp, float bend, float leafLoss, bool limbs, float seed, float pxM, float shadeMul, Column col, float vMin, float vMax)
 {
   if (v < vMin || v > vMax || v < 0.0) return vec4(0.0);
-  vec3 bark = sp == 3 ? lin(vec3(0.90, 0.88, 0.83)) : sp == 2 ? lin(vec3(0.54, 0.50, 0.44)) : lin(vec3(0.36, 0.27, 0.19));
-  vec3 leaf = lin(speciesLeaf(sp));
+  vec3 bark = sp == 3 ? lin(vec3(0.91, 0.89, 0.85)) : sp == 2 ? lin(vec3(0.54, 0.50, 0.44)) : sp == 1 ? lin(vec3(0.42, 0.29, 0.20)) : lin(vec3(0.35, 0.27, 0.20));
+  vec3 leafS = speciesLeaf(sp); // display-space colour, as in the mockup
   float dry = max(0.5 - col.soilMoisture * (0.5 / fullGreenSoilMoisture), 0.0);
-  leaf = mix(leaf, dryGrassCol * 0.6, dry * 0.5);
+  leafS = mix(leafS, vec3(0.62, 0.50, 0.28), dry * 0.5);
   float snowCover = clamp(col.snow / fullWhiteSnowHeight, 0.0, 1.0);
   float u = dx - stemLean(v, h, bend);
-  float n = 0.5; // leafy texture, fetched only where a crown is hit
 
-  if (sp == 1) { // pine: dense tiers of needles
+  if (sp == 1) { // pine, as in the mockup: 7 overlapping tiers, each a dark full triangle under a lighter, left-lit one
     float base = h * 0.16;
     float tierH = (h - base) / 7.0;
     if (v > base) {
-      float f = (v - base) / (h - base);
-      float ft = fract((v - base) / tierH);
-      float halfW = h * 0.21 * (1.0 - f) * (0.78 + 0.22 * (1.0 - ft)) * (1.0 - leafLoss * 0.35) + pxM * 0.6;
-      if (abs(u) < halfW * 1.04) n = texture(noiseTex, vec2(dx, v) * 0.11 + seed * 7.3).r;
-      if (abs(u) < halfW * (0.92 + 0.12 * n)) {
-        vec3 c = leaf * mix(0.62, 1.12, smoothstep(0.0, 0.6, ft)) * (0.9 + 0.2 * n); // dark underside of each tier
-        if (snowCover > 0.0 && ft > 0.7) c = mix(c, vec3(1.0), snowCover);
-        return vec4(c * shadeMul, 1.0);
+      float thin = 1.0 - leafLoss * 0.35;
+      float iTop = min(floor((v - base) / tierH), 6.0);
+      for (int k = 0; k < 2; k++) { // the tier starting here, then the one below (tiers overlap by 35%)
+        float ti = iTop - float(k);
+        if (ti < 0.0) break;
+        float v0 = base + tierH * ti, v1 = min(base + tierH * (ti + 1.35), h);
+        float t = (v - v0) / (v1 - v0);
+        if (t < 0.0 || t > 1.0) continue;
+        float hw = (h * 0.21 * (1.0 - (v0 - base) / (h - base)) * thin + pxM * 0.6) * (1.0 - t);
+        if (u > -hw && u < hw) {
+          bool lit = u > -0.92 * hw && u < 0.6 * hw && v > v0 + 0.03 * tierH;
+          vec3 c = mockShade(leafS, lit ? 0.05 : -0.25);
+          if (snowCover > 0.0 && lit) c = mix(c, vec3(1.0), snowCover * 0.8);
+          return vec4(c * shadeMul, 1.0);
+        }
       }
     }
     float tw = max(h * 0.035 * (1.2 - 0.7 * v / h), pxM * 0.7);
@@ -414,30 +426,40 @@ vec4 treeShape(float dx, float v, float h, int sp, float bend, float leafLoss, b
     return vec4(0.0);
   }
 
-  // broadleaf crown: one lumpy outline (several lobes around the edge) filled with leaf clumps shaded by a noise
-  // relief lit from above. Closed: the sky only shows through once the storm tears leaves off.
+  // broadleaf crown, as in the mockup: overlapping round leaf clumps drawn in three layers -- a dark layer slightly
+  // lower, a mid layer, and a smaller lit layer slightly higher -- so the crown is closed and reads as foliage.
+  // Torn-off clumps leave gaps once the storm strips the leaves.
   vec4 cr = speciesCrown(sp);
-  float rx = cr.x * h, ry = cr.y * h, cy = cr.z * h;
-  float cu = dx - stemLean(cy, h, bend); // crown is bent as a block (cheap, looks right)
-  vec2 e = vec2(cu / rx, (v - cy) / ry);
-  float q = length(e);
-  if (q < 1.25) {
-    float th = atan(e.y, e.x);
-    float lobes = sp == 2 ? 3.0 : 5.0;
-    float edge = 1.0 + 0.11 * sin(lobes * th + seed * 6.3) + 0.07 * sin((lobes + 4.0) * th + seed * 11.1) - leafLoss * 0.3;
-    if (q < edge + 0.05) {
-      float clump = (sp == 2 ? 0.10 : 0.16) * h;                              // size of a leaf clump, m
-      vec2 pc = vec2(dx, v) / clump * 0.06 + seed * 3.7;
-      float b0 = texture(noiseTex, pc).r;
-      float b1 = texture(noiseTex, pc + vec2(0.0, 0.02)).r;                    // relief: clump tops catch the light
-      n = b0;
-      if (q < edge - 0.06 * b0 && b0 > leafLoss * 0.9) {
-        float light = 0.78 + 1.6 * (b1 - b0) + 0.22 * e.y;
-        light *= mix(0.75, 1.0, smoothstep(-1.0, 0.3, e.y));                   // crown base in shadow
-        vec3 c = leaf * clamp(light, 0.5, 1.25) * (0.92 + 0.16 * b0);
-        c = mix(c, vec3(0.95), snowCover * smoothstep(0.1, 0.8, e.y) * 0.6);
-        return vec4(c * shadeMul, 1.0);
+  float rx = cr.x * h, ry = cr.y * h, cy = cr.z * h, rMin = min(rx, ry);
+  float elong = clamp(ry / rx, 1.0, 2.6) * 0.8 + 0.2; // tall crowns (poplar) get tall clumps
+  float cu = dx - stemLean(cy, h, bend);              // crown is bent as a block
+  if (abs(cu) < rx * 1.3 + pxM && abs(v - cy) < ry * 1.4 + pxM) {
+    int layer = -1; // 0 dark, 1 mid, 2 lit
+    int clumps = int(cr.w);
+    for (int i = 0; i <= 12; i++) {
+      if (i > clumps) break;
+      vec2 c;
+      float r;
+      if (i == clumps) { // core clump: no hole in the middle of a healthy crown
+        c = vec2(0.0, cy);
+        r = 0.75 * rMin * (0.35 + 0.65 * (1.0 - leafLoss));
+      } else {
+        vec4 hk = hash4(seed * 1731.0 + float(i) * 17.0);
+        if (hk.x < leafLoss) continue; // clump torn off
+        float a = hk.y * 6.2832, rr = sqrt(hk.z) * 0.62;
+        c = vec2(cos(a) * rr * rx, cy + sin(a) * rr * ry);
+        r = (0.42 + 0.22 * hk.w) * rMin;
       }
+      vec2 d = vec2(cu - c.x, (v - c.y) / elong);
+      float rr2 = max(r, pxM);
+      if (length(d - vec2(0.0, 0.16 * rr2)) < 0.70 * rr2) { layer = 2; break; }
+      if (dot(d, d) < 0.92 * rr2 * rr2) layer = max(layer, 1);
+      else if (length(d + vec2(0.0, 0.10 * rr2)) < rr2) layer = max(layer, 0);
+    }
+    if (layer >= 0) {
+      vec3 c = mockShade(leafS, layer == 2 ? 0.16 : layer == 1 ? -0.06 : -0.32);
+      if (layer == 2) c = mix(c, vec3(0.95), snowCover * 0.7);
+      return vec4(c * shadeMul, 1.0);
     }
   }
   // trunk, and broken limbs that show once the crown is torn
@@ -745,8 +767,8 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
       float w = c.windKmh;
       float aw = min(abs(w) / 25.0, 1.0);
       float ph = s * 1.7 + hb.y * 6.3;
-      float flutter = (sin(realTime * 9.0 + ph) * 0.6 + sin(realTime * 14.0 + ph * 2.1) * 0.4) * 0.05 * aw; // leaves shivering
-      float gustSway = 1.0 + 0.32 * sin(realTime * 1.8 + ph) + 0.16 * sin(realTime * 3.3 + ph * 1.3);        // trunk swaying
+      float flutter = (sin(realTime * 2.6 + ph) * 0.6 + sin(realTime * 4.1 + ph * 2.1) * 0.4) * 0.04 * aw; // leaves shivering
+      float gustSway = 1.0 + 0.25 * sin(realTime * 0.55 + ph) + 0.12 * sin(realTime * 0.95 + ph * 1.3);       // trunk swaying slowly with the gusts
       float bend = clamp(w / 55.0 * 0.36 * stiff * gustSway + flutter, -0.65, 0.65);
       if (c.gust < 110.0) { // certainly standing: reject points outside the bent crown's width
         float halfW = sp == 1 ? 0.23 * h : speciesCrown(sp).x * h * 1.3;

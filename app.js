@@ -1032,7 +1032,7 @@ const guiControls_default = {
   classicWind : false,
   saturation : 1.15,                // colour grading (from the EXTRA fork): post-processing saturation
   contrast : 1.1,                   // and contrast
-  greenHueStrength : 0.65,          // green / teal cast inside intense rain and hail cores, in the shade, by day
+  greenHueStrength : 0.3,          // green / teal cast inside intense rain and hail cores, in the shade, by day
   sunsetCloudColors : true,         // purple -> pink -> orange -> yellow on cloud faces at sunrise / sunset, by altitude
   newDecor : true,                  // procedural trees (bending, storm damage) and small houses instead of the texture strips
   decorScale : 2.5,                 // visual size multiplier of trees and houses (real size is barely a few pixels at usual zooms)
@@ -8515,6 +8515,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   var uniformLocation_precipDisplayProgram_aspectRatios = gl.getUniformLocation(precipDisplayProgram, 'aspectRatios');
   var uniformLocation_precipDisplayProgram_view = gl.getUniformLocation(precipDisplayProgram, 'view');
   var uniformLocation_precipDisplayProgram_showAllDrops = gl.getUniformLocation(precipDisplayProgram, 'showAllDrops');
+  var uniformLocation_precipDisplayProgram_smallHailPass = gl.getUniformLocation(precipDisplayProgram, 'smallHailPass');
   var uniformLocation_precipDisplayProgram_waterTex = gl.getUniformLocation(precipDisplayProgram, 'waterTex');
   var uniformLocation_temperatureDisplayProgram_aspectRatios = gl.getUniformLocation(temperatureDisplayProgram, 'aspectRatios');
   var uniformLocation_temperatureDisplayProgram_view = gl.getUniformLocation(temperatureDisplayProgram, 'view');
@@ -9207,7 +9208,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.bindTexture(gl.TEXTURE_2D, waterTexture_1); // read here so hail can fade/shrink while still inside the cloud
         gl.uniform1i(uniformLocation_precipDisplayProgram_waterTex, 3);
         gl.bindVertexArray(destVAO);
+        gl.uniform1f(uniformLocation_precipDisplayProgram_smallHailPass, 0.0);
         gl.drawArrays(gl.POINTS, 0, NUM_DROPLETS);
+        if (guiControls.hailEnabled && !guiControls.showDrops) { // small hailstones falling with the large hail
+          gl.uniform1f(uniformLocation_precipDisplayProgram_smallHailPass, 1.0);
+          gl.drawArrays(gl.POINTS, 0, NUM_DROPLETS);
+        }
         gl.bindVertexArray(fluidVao); // set screenfilling rect again
         gl.disable(gl.BLEND);
       }

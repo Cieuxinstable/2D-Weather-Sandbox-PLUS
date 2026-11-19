@@ -15,10 +15,28 @@ uniform vec2 aspectRatios;  // sim   canvas
 uniform vec3 view;          // Xpos  Ypos    Zoom
 uniform float showAllDrops; // 1.0 = debug: render every droplet (rain/snow/hail). 0.0 = normal play: only hail is drawn as a particle
 uniform sampler2D waterTex; // sampled only for hail, to fade/shrink it while still inside the cloud
+uniform float smallHailPass; // 1 = second pass: a small hailstone near each large one (graupel falling with big hail)
 
 void main()
 {
-  vec2 outpos = dropPosition;
+  bool isHail = mass[1] > 0. && density >= 1.0;
+  float growth = clamp(density - 1.0, 0.0, 1.5) / 1.5;
+  vec2 pos = dropPosition;
+  float smallHail = 0.0;
+  if (smallHailPass > 0.5) {
+    // only next to large hail; each large stone gets one small companion at a fixed random offset, a bit higher up
+    if (!isHail || growth < 0.4) {
+      gl_Position = vec4(2.0, 2.0, 0.0, 1.0); // off screen
+      gl_PointSize = 0.0;
+      position_out = dropPosition; mass_out = vec2(-1.0); density_out = 0.0; cloudAmount_out = 0.0;
+      return;
+    }
+    float id = float(gl_VertexID);
+    vec2 r = fract(sin(vec2(id * 12.9898, id * 78.233)) * 43758.5453);
+    pos += vec2((r.x - 0.5) * 0.006, r.y * 0.006);
+    smallHail = 0.35 + 0.25 * r.y; // size as a fraction of a big stone
+  }
+  vec2 outpos = pos;
 
   outpos.x += view.x;
   outpos.y += view.y * aspectRatios[0];
@@ -29,7 +47,7 @@ void main()
 
   gl_Position = vec4(outpos, 0.0, 1.0);
 
-  bool isHailParticle = mass[1] > 0. && density >= 1.0; // pure/partly-melted dense ice, classified the same way the fragment shader colors it
+  bool isHailParticle = isHail; // pure/partly-melted dense ice, classified the same way the fragment shader colors it
 
   float size = 4.0; // 4.0
   cloudAmount_out = 0.0;
@@ -43,7 +61,8 @@ void main()
 
     // dropPosition is already in the simulation's own -1..1 space (untouched by camera pan/zoom), so it
     // maps directly to a 0..1 texture UV without needing the view/aspect transform used for gl_Position.
-    vec2 waterUV = dropPosition * 0.5 + 0.5;
+    if (smallHail > 0.0) size = max(5.0 * smallHail, 0.8);
+    vec2 waterUV = pos * 0.5 + 0.5;
     cloudAmount_out = texture(waterTex, waterUV).y; // CLOUD channel
   } else if (showAllDrops < 0.5) {
     size = 0.0; // outside debug mode, rain/snow are shown via the volumetric cloud/precip fog instead of individual points
@@ -57,7 +76,7 @@ void main()
 
   gl_PointSize = pointSizePx;
 
-  position_out = dropPosition;
+  position_out = pos;
   mass_out = mass;
   density_out = density;
 }

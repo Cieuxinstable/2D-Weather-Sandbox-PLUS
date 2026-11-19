@@ -444,7 +444,9 @@ void main()
             float vk = texture(baseTex, texCoord + vec2(0.0, float(k) * texelSize.y))[VX];
             if (abs(vk) > abs(gustRaw)) gustRaw = vk;
           }
-          float gustKmh = abs(gustRaw) * kmhPerRaw;
+          // The sim gives the mean wind of a 40 m cell over ~0.3 s; real gusts near the ground reach ~1.5x the mean
+          // wind, and gusts are what break trees and roofs.
+          float gustKmh = abs(gustRaw) * kmhPerRaw * 1.5;
           float packed = floor(min(abs(water[CLOUD]), 0.9999999) * 16777216.0 + 0.5); // float math: exact below 2^24
           float peak = floor(packed / 65536.0);
           float prevPeak = floor(mod(packed, 65536.0) / 256.0);
