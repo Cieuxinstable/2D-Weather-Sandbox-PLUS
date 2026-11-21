@@ -16,6 +16,8 @@ uniform vec2 aspectRatios;  // sim   canvas
 uniform vec3 view;          // Xpos  Ypos    Zoom
 uniform float showAllDrops; // 1.0 = debug: render every droplet (rain/snow/hail). 0.0 = normal play: only hail is drawn as a particle
 uniform sampler2D waterTex; // sampled only for hail, to fade/shrink it while still inside the cloud
+uniform float pxPerMeter;    // screen pixels per meter at zoom 1 (hail is drawn to the same scale as trees and houses)
+uniform float decorScale;    // size multiplier of the scenery, applied to hailstones too
 uniform float smallHailPass; // 1 = second pass: a small hailstone near each large one (graupel falling with big hail)
 
 void main()
@@ -34,7 +36,7 @@ void main()
     }
     float id = float(gl_VertexID);
     vec2 r = fract(sin(vec2(id * 12.9898, id * 78.233)) * 43758.5453);
-    pos += vec2((r.x - 0.5) * 0.006, r.y * 0.006);
+    pos += vec2((r.x - 0.5) * 0.0015, r.y * 0.0015); // a few tens of meters away
     smallHail = 0.35 + 0.25 * r.y; // size as a fraction of a big stone
   }
   vec2 outpos = pos;
@@ -72,8 +74,14 @@ void main()
   float pointSizePx = view[2] * size / aspectRatios[0]; // scales with camera zoom like every other object in the scene
 
   zoomVis_out = smoothstep(4.0, 12.0, view[2]);
-  if (isHailParticle)
-    pointSizePx = clamp(pointSizePx, 1.0, 6.0); // absolute on-screen cap (diameter 0.6-5px, r=0.3-2.5px): hail must
+  if (isHailParticle) {
+    // true scale: 0.5 cm (small) to 5 cm (large) hailstones, times the scenery scale, so they stay tiny next to
+    // the houses. Below one pixel they are drawn as faint 1 px specks, like fine snow.
+    float diamM = mix(0.005, 0.05, isHail ? growth : 0.0) * (smallHail > 0.0 ? smallHail : 1.0) * max(decorScale, 1.0);
+    float px = diamM * pxPerMeter * view[2];
+    pointSizePx = max(px, 1.0);
+    zoomVis_out *= clamp(px * 1.5, 0.35, 1.0);
+  } // absolute on-screen cap (diameter 0.6-5px, r=0.3-2.5px): hail must
                                                  // never balloon into a giant disc just because the camera is zoomed in
 
   gl_PointSize = pointSizePx;
