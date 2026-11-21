@@ -463,10 +463,11 @@ void main()
               timer += 1.0;
           }
           if (timer >= 255.0 && gustKmh > 55.0 && gustKmh > peak + 3.0) {
+            if (peak < 1.0) // direction set by the first damaging gust: trees already down never flip to the other side
+              dir = gustRaw < 0.0 ? -1.0 : 1.0;
             prevPeak = peak;
             peak = min(floor(gustKmh), 255.0);
             timer = 0.0;
-            dir = gustRaw < 0.0 ? -1.0 : 1.0;
           }
           if (peak >= 1.0)
             water[CLOUD] = dir * (peak * 65536.0 + prevPeak * 256.0 + timer) / 16777216.0;
