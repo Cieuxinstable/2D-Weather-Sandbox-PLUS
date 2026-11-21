@@ -443,13 +443,13 @@ void main()
         // A new peak is only taken once the previous animation has finished. Kept until the ground is repainted.
         if (stormDamage > 0.5) {
           float gustRaw = baseAboveSurface[VX];
-          for (int k = 2; k <= 4; k++) {
-            float vk = texture(baseTex, texCoord + vec2(0.0, float(k) * texelSize.y))[VX];
-            if (abs(vk) > abs(gustRaw)) gustRaw = vk;
+          {
+            float vk = texture(baseTex, texCoord + vec2(0.0, 2.0 * texelSize.y))[VX]; // only the 2 cells at tree height:
+            if (abs(vk) > abs(gustRaw)) gustRaw = vk;                                  // higher up the wind is much stronger
           }
-          // The sim gives the mean wind of a 40 m cell over ~0.3 s; real gusts near the ground reach ~1.5x the mean
-          // wind, and gusts are what break trees and roofs.
-          float gustKmh = abs(gustRaw) * kmhPerRaw * 1.5;
+          // The sim gives the mean wind of a 40 m cell over ~0.3 s; real gusts near the ground reach ~1.25x that mean,
+          // and gusts are what break trees and roofs.
+          float gustKmh = abs(gustRaw) * kmhPerRaw * 1.25;
           float packed = floor(min(abs(water[CLOUD]), 0.9999999) * 16777216.0 + 0.5); // float math: exact below 2^24
           float peak = floor(packed / 65536.0);
           float prevPeak = floor(mod(packed, 65536.0) / 256.0);

@@ -450,6 +450,7 @@ void main()
           if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIELD || wall[TYPE] == WALLTYPE_FIRE || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
             wall[VEGETATION] += 1;                             // add vegetation
+            water[CLOUD] = 0.0;                                // replanted: healthy trees again
           }
           break;
         }
@@ -491,6 +492,7 @@ void main()
             water[SNOW] += userInputValues[BRUSH_INTENSITY] * 0.5; // remove snow
           } else if (userInputType == 22) {
             wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);       // remove vegetation
+            water[CLOUD] = 0.0;                                    // and the fallen trees with it
           } else if (texCoord.y > texelSize.y) {
             wall[DISTANCE] = 255;                                  // remove wall
             base[VX] = 0.0;                                        // reset all properties to prevent NaN bug

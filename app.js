@@ -8579,6 +8579,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   var uniformLocation_precipDisplayProgram_view = gl.getUniformLocation(precipDisplayProgram, 'view');
   var uniformLocation_precipDisplayProgram_showAllDrops = gl.getUniformLocation(precipDisplayProgram, 'showAllDrops');
   var uniformLocation_precipDisplayProgram_smallHailPass = gl.getUniformLocation(precipDisplayProgram, 'smallHailPass');
+  var uniformLocation_precipDisplayProgram_pxPerMeter = gl.getUniformLocation(precipDisplayProgram, 'pxPerMeter');
+  var uniformLocation_precipDisplayProgram_decorScale = gl.getUniformLocation(precipDisplayProgram, 'decorScale');
   var uniformLocation_precipDisplayProgram_waterTex = gl.getUniformLocation(precipDisplayProgram, 'waterTex');
   var uniformLocation_temperatureDisplayProgram_aspectRatios = gl.getUniformLocation(temperatureDisplayProgram, 'aspectRatios');
   var uniformLocation_temperatureDisplayProgram_view = gl.getUniformLocation(temperatureDisplayProgram, 'view');
@@ -9270,6 +9272,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform2f(uniformLocation_precipDisplayProgram_aspectRatios, sim_aspect, canvas_aspect);
         gl.uniform3f(uniformLocation_precipDisplayProgram_view, cam.curXpos, cam.curYpos, cam.curZoom);
         gl.uniform1f(uniformLocation_precipDisplayProgram_showAllDrops, guiControls.showDrops ? 1.0 : 0.0);
+        gl.uniform1f(uniformLocation_precipDisplayProgram_pxPerMeter, canvas.width / (sim_res_x * cellHeight));
+        gl.uniform1f(uniformLocation_precipDisplayProgram_decorScale, guiControls.decorScale);
         gl.activeTexture(gl.TEXTURE3);
         gl.bindTexture(gl.TEXTURE_2D, waterTexture_1); // read here so hail can fade/shrink while still inside the cloud
         gl.uniform1i(uniformLocation_precipDisplayProgram_waterTex, 3);

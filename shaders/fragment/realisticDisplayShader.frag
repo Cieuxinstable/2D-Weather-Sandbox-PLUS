@@ -520,9 +520,14 @@ vec4 drawTree(float dx, float v, float h, int sp, float bend, float resist, floa
   float dir = col.fallDir;
   // falling animation: it broke during the last peak if its threshold is above the previous one
   float prog = col.prevGust >= thr.z ? 1.0 : col.anim;
-  float fallP = min(1.0, prog / 0.75);
-  A *= fallP * fallP;                       // accelerates as it goes over
-  drop *= smoothstep(0.75, 1.0, prog);      // then the broken top slides off the stump
+  // Toppling like a real tree: it starts slowly (cracking), accelerates as gravity takes over, hits the ground at
+  // 55% of the animation, rebounds a little on its branches and settles; then a broken top slides off the stump.
+  float fallT = min(prog / 0.55, 1.0);
+  float ang0 = A * (1.0 - cos(fallT * 1.5708));                                         // slow start, fast end
+  float rebound = prog > 0.55 ? sin(clamp((prog - 0.55) / 0.25, 0.0, 1.0) * 3.1416) * 0.07 * exp(-(prog - 0.55) * 6.0) : 0.0;
+  float landed = smoothstep(0.5, 0.62, prog);
+  A = ang0 - rebound;
+  drop *= smoothstep(0.75, 1.0, prog);
 
   // standing stump (snapped trees), splintered at the top
   if (!uproot) {
@@ -539,7 +544,9 @@ vec4 drawTree(float dx, float v, float h, int sp, float bend, float resist, floa
   vec2 p = vec2(dx, v + drop) - vec2(0.0, pivot);
   float ang = A * dir;
   vec2 q = vec2(cos(ang) * p.x - sin(ang) * p.y, sin(ang) * p.x + cos(ang) * p.y) + vec2(0.0, pivot);
-  return treeShape(q.x, q.y, h, sp, 0.0, 0.55, false, seed, pxM, shadeMul, col, pivot, 1e9);
+  // once on the ground the crown is crushed flat against it (its side facing the ground is the tree's +/-x)
+  q.x *= 1.0 + 0.45 * landed;
+  return treeShape(q.x, q.y, h, sp, 0.0, mix(0.45, 0.62, landed), false, seed, pxM, shadeMul, col, pivot, 1e9);
 }
 
 // Returns rgb + alpha of the house covering point (dx, v) in meters relative to its base center; lit = window lit at night.
@@ -740,7 +747,7 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
 
   // crop fields: blocks of wheat, maize, colza or meadow, stalks waving in travelling gusts, flattened (lodged)
   // where a strong gust went through, white under snow.
-  if (cHere.valid && cHere.type == WALLTYPE_FIELD && vHere < 6.0 * decorScale) {
+  if (cHere.valid && cHere.type == WALLTYPE_FIELD && vHere < 3.0 * decorScale) {
     float xm = frag.x * cellHeight;
     float blockW = 60.0 * decorScale;
     float blk = floor(xm / blockW);
@@ -748,7 +755,7 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
     vec4 hk = hash4(blk * 0.53 + 41.0);
     int crop = hk.x < 0.35 ? 0 : hk.x < 0.6 ? 1 : hk.x < 0.8 ? 2 : 3; // wheat, maize, colza, meadow
     if (inBlk > 1.5 * decorScale && inBlk < blockW - 1.5 * decorScale) { // bare path between fields
-      float H = (crop == 0 ? 1.0 : crop == 1 ? 2.6 : crop == 2 ? 1.4 : 0.5) * decorScale * 2.0; // exaggerated like the trees, to be visible
+      float H = (crop == 0 ? 1.0 : crop == 1 ? 2.6 : crop == 2 ? 1.4 : 0.5) * decorScale; // same scale as trees and houses
       float lodged = smoothstep(80.0, 110.0, cHere.gust);                 // flattened by the storm
       float w = cHere.windKmh;
       float wave = 0.5 + 0.5 * sin(realTime * 2.2 - xm * 0.12 * sign(w + 0.001));
@@ -777,7 +784,7 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
   // trees: a front row of slots every 6 m and, in dense woods, a darker back row in between. The Land brush
   // intensity (vegetation 50..127) sets the share of filled slots: ~1 tree / 30 m up to a closed canopy.
   float treeSp = 6.0 * decorScale / cellHeight;
-  float treeReach = min(16.0 * decorScale / cellHeight, 2.0); // max crown radius + bend, in cells
+  float treeReach = min(34.0 * decorScale / cellHeight, 2.0); // a fallen tree lies up to its full height away, in cells
   int passes = cHere.valid && treeDensity(cHere) > 0.45 ? 2 : 1; // the back row only exists in dense woods
   for (int pass = 0; pass < 2; pass++) {
     if (pass >= passes) break;
@@ -802,7 +809,7 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
       float dx = (frag.x - xc) * cellHeight;
       float v = (frag.y - c.groundTop) * cellHeight;
       vec4 hb = hash4(sid * 5.31 + 77.0); // x: resistance, y: seed
-      float resist = pass == 1 ? 0.7 : 0.88 + 0.24 * hb.x; // back row gives way first, so no intact tree shows up behind a felled one
+      float resist = 0.88 + 0.24 * hb.x;
       // leaves and branches thrown off by the last peak gust
       if (c.anim < 1.0 && c.gust > c.prevGust) {
         vec3 thr = speciesThresholds(sp) * resist;
@@ -812,7 +819,9 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
         if (leavesOff || branchOff || felled) {
           vec3 lc = lin(speciesLeaf(sp));
           vec3 c2 = branchOff ? (sp == 3 ? lin(vec3(0.85, 0.83, 0.78)) : lin(vec3(0.36, 0.27, 0.19))) : lc * 1.3;
-          vec4 bc = debrisBurst(dx, v, c.anim, c.fallDir, h * 0.65, h * 0.5, h * 1.1, 0.5 * decorScale, lc, c2, hb.y * 97.0 + sid, pxM, felled ? 14 : 9);
+          float burstT = felled ? clamp((c.anim - 0.5) / 0.5, 0.0, 1.0) : c.anim; // a felled tree throws its leaves when it hits the ground
+          float burstX = felled ? c.fallDir * h * 0.6 : 0.0;
+          vec4 bc = (felled && c.anim < 0.5) ? vec4(0.0) : debrisBurst(dx - burstX, v, burstT, c.fallDir, felled ? h * 0.15 : h * 0.65, h * 0.5, felled ? h * 0.5 : h * 1.1, 0.5 * decorScale, lc, c2, hb.y * 97.0 + sid, pxM, felled ? 14 : 9);
           if (bc.a > 0.0) { isTree = true; return bc; }
         }
       }
@@ -825,7 +834,7 @@ vec4 drawDecor(vec2 frag, bool night, out bool lit, out bool isTree)
       float flutter = (sin(realTime * 2.6 + ph) * 0.6 + sin(realTime * 4.1 + ph * 2.1) * 0.4) * 0.04 * aw; // leaves shivering
       float gustSway = 1.0 + 0.25 * sin(realTime * 0.55 + ph) + 0.12 * sin(realTime * 0.95 + ph * 1.3);       // trunk swaying slowly with the gusts
       float bend = clamp(w / 55.0 * 0.36 * stiff * gustSway + flutter, -0.65, 0.65);
-      if (c.gust < 110.0) { // certainly standing: reject points outside the bent crown's width
+      if (c.gust < speciesThresholds(sp).z * resist) { // still standing: reject points outside the bent crown's width
         float halfW = sp == 1 ? 0.23 * h : speciesCrown(sp).x * h * 1.3;
         if (abs(dx - stemLean(min(v, h), h, bend)) > halfW + (abs(bend) * 0.4 + 0.1) * h + pxM) continue; // crown is bent as a block
       }
