@@ -448,6 +448,7 @@ const presets = [
 ];
 
 var startDate;
+var startHourUtc = null; // hour (UTC) of the sounding chosen on the home screen; the game starts at that time
 var startLatitude;
 
 // When true (setup-screen checkbox), a new simulation starts with Sounding Forcing at full strength so the
@@ -480,6 +481,7 @@ function createPresetSelect()
     document.getElementById('datePicker').value = preset.date;
     startDate = new Date(preset.date);
     document.getElementById('hourSelector').value = preset.hour;
+    startHourUtc = parseFloat(preset.hour);
 
     setSoundingLocation(Object.assign({key : preset.location, label : preset.location}, soundingStations[preset.location]));
   };
@@ -832,6 +834,7 @@ function setupSoundingDateControls()
 
   // Start on today's sounding (or a forecast for later today) rather than an arbitrary fixed date.
   datePicker.value = todayIso(new Date());
+  startDate = new Date(datePicker.value); // the game's calendar (sun height, season) follows the chosen sounding date
 
   for (const btn of document.querySelectorAll('[data-day-offset]')) {
     btn.addEventListener('click', function() {
@@ -841,7 +844,11 @@ function setupSoundingDateControls()
     });
   }
 
-  hourSelector.addEventListener('change', prepareSounding);
+  startHourUtc = parseFloat(hourSelector.value);
+  hourSelector.addEventListener('change', function() {
+    startHourUtc = parseFloat(hourSelector.value);
+    prepareSounding();
+  });
 
   const applyCheckbox = document.getElementById('applySoundingAtStart');
   if (applyCheckbox) {
@@ -5130,6 +5137,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     if (startLatitude) {
       guiControls.latitude = startLatitude;
     }
+
+    // start at the sounding's hour, as local solar time (UTC + longitude / 15), so the sun matches the sounding
+    if (Number.isFinite(startHourUtc) && soundingLocation && Number.isFinite(soundingLocation.lon))
+      guiControls.timeOfDay = ((startHourUtc + soundingLocation.lon / 15) % 24 + 24) % 24;
 
   } else {
     setupDatGui(guiControlsFromSaveFile);                     // use settings from save file
