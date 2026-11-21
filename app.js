@@ -2535,7 +2535,7 @@ function drawSetupEmagram(table)
   canvas.width = Math.round(width * dpr);
   canvas.height = Math.round(height * dpr);
 
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true }); // the hover overlay reads the drawn graph back
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
   ctx.lineJoin = 'round';
@@ -3462,7 +3462,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           let Rgain = clamp((sampleWidth_3 - Math.abs(i - sampleWidth_3 * 2)) / (sampleWidth_3 * sampleWidth_3), 0., 1.);
           let gain = new Vec2D(Lgain, Rgain);
 
-          if (wallTextureValues[i * 4 + 0] == 1) { // land vegetation
+          if (wallTextureValues[i * 4 + 0] == 1 || wallTextureValues[i * 4 + 0] == 7) { // land vegetation (or fields)
             let vegetationNorm = wallTextureValues[i * 4 + 3] / 127.0;
             forest.add(gain.mult(vegetationNorm));
           } else if (wallTextureValues[i * 4 + 0] == 2) {                                      // water
